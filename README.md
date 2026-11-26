@@ -1,4 +1,4 @@
-# Vinted Workflow — versión 0.3.1
+# Vinted Workflow — versión 0.4.0
 
 Aplicación web para iPhone (Safari) que guarda en tu Google Drive las fotos y el audio de cada prenda, **una carpeta por prenda**.
 
@@ -40,7 +40,7 @@ Lista las fotos (orden, nombre, nombre original, fecha de la foto, tamaño) y lo
 
 ## Otro modo: sesión continua
 
-En el inicio, desplegable **«Otro modo: sesión continua»**. La cámara se abre dentro de la app y el micrófono graba sin parar mientras haces fotos de muchas prendas seguidas. Todo va a una carpeta `SESION_fecha_hora/` con marcas de tiempo para cruzar audio y fotos. Contras: las fotos salen de la cámara web (hasta 4K, sin el procesado de la cámara del iPhone) y hay que mantener Safari abierto toda la sesión.
+En el inicio, **Más › Sesión continua**. La cámara se abre dentro de la app y el micrófono graba sin parar mientras haces fotos de muchas prendas seguidas. Todo va a una carpeta `SESION_fecha_hora/` con marcas de tiempo para cruzar audio y fotos. Contras: las fotos salen de la cámara web (hasta 4K, sin el procesado de la cámara del iPhone) y hay que mantener Safari abierto toda la sesión.
 
 ## Seguridad: qué protege qué
 

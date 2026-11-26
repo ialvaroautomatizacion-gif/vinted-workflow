@@ -20,29 +20,15 @@
   form-action 'none'">
 <meta name="theme-color" content="#111418">
 <title>Vinted Workflow</title>
-<link rel="stylesheet" href="app.css?v=0.3.1">
+<link rel="stylesheet" href="app.css?v=0.4.0">
 </head>
 <body>
 
 <!-- ================= PANTALLA INICIAL ================= -->
 <section id="screen-home" class="screen active">
-  <header class="home-header">
-    <h1>Vinted Workflow</h1>
-    <p class="muted" id="app-version"></p>
-  </header>
+  <header class="home-header"><h1>Vinted Workflow</h1></header>
 
   <div class="card warn hidden" id="env-warning"></div>
-
-  <div class="card" id="auth-card">
-    <div class="row">
-      <div class="grow">
-        <div class="label">Google Drive</div>
-        <div id="auth-status" class="value">Cargando…</div>
-      </div>
-      <button id="btn-login" class="btn secondary">Entrar con Google</button>
-    </div>
-    <button id="btn-logout" class="link-btn hidden">Cambiar de cuenta</button>
-  </div>
 
   <div class="card warn hidden" id="resume-card">
     <div class="label">Sesión sin terminar</div>
@@ -54,41 +40,49 @@
   </div>
 
   <button id="btn-prenda" class="btn huge primary">NUEVA PRENDA</button>
-  <p class="hint" id="prenda-hint">Haz las fotos con la cámara del iPhone, elígelas aquí y graba el audio.</p>
+  <p class="hint hidden" id="prenda-hint"></p>
 
-  <div class="card" id="sync-card">
-    <div class="label">Sincronización</div>
-    <div id="home-sync" class="value">—</div>
+  <div class="status-row">
+    <div class="grow">
+      <div id="auth-status">Cargando…</div>
+      <div id="home-sync" class="muted"></div>
+    </div>
+    <button id="btn-login" class="btn secondary hidden">Entrar con Google</button>
   </div>
 
-  <div class="card">
-    <div class="label">Guardado</div>
-    <ul id="session-list" class="session-list"><li class="muted">Ninguna todavía.</li></ul>
+  <div id="list-card" class="hidden">
+    <div class="label">Prendas</div>
+    <ul id="session-list" class="session-list"></ul>
   </div>
 
-  <details class="card small" id="session-mode">
-    <summary>Otro modo: sesión continua (cámara y audio a la vez)</summary>
-    <p class="muted">La cámara se abre dentro de la app y el micrófono graba sin parar mientras haces fotos de muchas prendas. Las fotos tienen algo menos de calidad que con la cámara del iPhone.</p>
-    <button id="btn-start" class="btn wide primary" disabled>EMPEZAR SESIÓN CONTINUA</button>
-    <p class="hint" id="start-hint">Entra con Google para empezar.</p>
-    <div class="label top">Fotos</div>
-    <label class="opt"><input type="radio" name="photomode" value="auto" checked> Automático: foto completa si el iPhone lo permite</label>
-    <label class="opt"><input type="radio" name="photomode" value="frame"> Fotograma de la vista previa (más compatible)</label>
-    <div class="label top">Calidad de la cámara</div>
-    <label class="opt"><input type="radio" name="quality" value="high" checked> Alta (4K)</label>
-    <label class="opt"><input type="radio" name="quality" value="normal"> Normal (1080p): menos batería y calor</label>
-    <div class="label top">Cámara</div>
-    <select id="camera-select" class="select"><option value="">Trasera (automática)</option></select>
-    <p class="muted" id="camera-hint">Las demás cámaras aparecen aquí después de la primera sesión.</p>
-  </details>
+  <details class="more" id="more">
+    <summary>Más</summary>
+    <button id="btn-logout" class="btn wide secondary hidden">Cambiar de cuenta de Google</button>
 
-  <details class="card small" id="settings">
-    <summary>Ajustes</summary>
-    <div class="label top">Formato del audio</div>
-    <label class="opt"><input type="radio" name="audiofmt" value="mp4" checked> M4A (recomendado: se reproduce en el iPhone y en Drive)</label>
-    <label class="opt"><input type="radio" name="audiofmt" value="webm"> WebM / Opus</label>
-    <div class="label top">Este dispositivo</div>
-    <p class="muted" id="caps-info"></p>
+    <details class="card small" id="session-mode">
+      <summary>Sesión continua (cámara y audio a la vez)</summary>
+      <button id="btn-start" class="btn wide primary" disabled>EMPEZAR SESIÓN CONTINUA</button>
+      <p class="hint" id="start-hint"></p>
+      <div class="label top">Fotos</div>
+      <label class="opt"><input type="radio" name="photomode" value="auto" checked> Automático</label>
+      <label class="opt"><input type="radio" name="photomode" value="frame"> Fotograma de la vista previa</label>
+      <div class="label top">Calidad</div>
+      <label class="opt"><input type="radio" name="quality" value="high" checked> Alta (4K)</label>
+      <label class="opt"><input type="radio" name="quality" value="normal"> Normal (1080p)</label>
+      <div class="label top">Cámara</div>
+      <select id="camera-select" class="select"><option value="">Trasera (automática)</option></select>
+      <p class="muted hidden" id="camera-hint"></p>
+    </details>
+
+    <details class="card small" id="settings">
+      <summary>Ajustes</summary>
+      <div class="label top">Formato del audio</div>
+      <label class="opt"><input type="radio" name="audiofmt" value="mp4" checked> M4A (recomendado)</label>
+      <label class="opt"><input type="radio" name="audiofmt" value="webm"> WebM</label>
+      <div class="label top">Este dispositivo</div>
+      <p class="muted" id="caps-info"></p>
+    </details>
+    <p class="muted small center" id="app-version"></p>
   </details>
 </section>
 
@@ -137,25 +131,23 @@
   </header>
 
   <div class="card">
-    <div class="label">1 · Fotos <span id="prenda-photo-count"></span></div>
+    <div class="label">Fotos <span id="prenda-photo-count"></span></div>
     <div id="prenda-grid" class="grid four"></div>
     <label for="camera-input" class="btn huge secondary" id="btn-pick">📷 HACER FOTO</label>
     <input type="file" id="camera-input" class="visually-hidden" accept="image/*" capture="environment">
     <input type="file" id="file-input" class="visually-hidden" accept="image/*" multiple>
-    <p class="muted small center" id="pick-hint">Se abre la cámara del iPhone. Haz la foto y pulsa «Usar foto».</p>
-    <p class="center"><label for="file-input" class="link-btn" id="btn-library">o elegir fotos ya hechas de la fototeca</label></p>
+    <p class="center"><label for="file-input" class="link-btn" id="btn-library">Elegir de la fototeca</label></p>
   </div>
 
   <div class="card">
-    <div class="label">2 · Audio</div>
+    <div class="label">Audio</div>
     <ul id="audio-list" class="audio-list"></ul>
     <div class="rec-live hidden" id="rec-live"><span class="dot"></span><span id="rec-time">00:00</span><span class="meter"><span id="rec-meter-bar"></span></span></div>
     <button id="btn-rec" class="btn huge secondary">🎙 GRABAR AUDIO</button>
-    <p class="muted small center" id="rec-hint">Cuenta marca, talla, medidas, estado y lo que quieras indicar.</p>
   </div>
 
   <button id="btn-save" class="btn huge primary" disabled>GUARDAR PRENDA</button>
-  <p class="center"><button id="btn-discard" class="link-btn">Descartar esta prenda</button></p>
+  <p class="center"><button id="btn-discard" class="link-btn">Descartar</button></p>
 </section>
 
 <!-- ================= GALERÍA ================= -->
@@ -210,6 +202,6 @@
 </div>
 
 <script src="https://accounts.google.com/gsi/client" async></script>
-<script type="module" src="bundle.js?v=0.3.1"></script>
+<script type="module" src="bundle.js?v=0.4.0"></script>
 </body>
 </html>

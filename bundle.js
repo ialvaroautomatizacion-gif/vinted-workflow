@@ -2,7 +2,7 @@
 
 // ../vinted-workflow/config.js
 var CONFIG = {
-  APP_VERSION: "0.3.1",
+  APP_VERSION: "0.4.0",
   // ID de cliente OAuth (tipo "Aplicación web") del proyecto de Google Cloud "vinted-workflow".
   CLIENT_ID: "34737536696-u8js6hqusljsbs5v5b4i424b3ejuhto2.apps.googleusercontent.com",
   // Correos autorizados. Si entras con otra cuenta, la app se niega a trabajar
@@ -2751,7 +2751,6 @@ async function refreshCameras() {
     sel.appendChild(o);
   }
   sel.value = cams.some((c) => c.id === saved) ? saved : "";
-  show($("camera-hint"), cams.length === 0);
 }
 var dialogQueue = Promise.resolve();
 function dialog(opts) {
@@ -2822,12 +2821,13 @@ Entra con ${CONFIG.ALLOWED_EMAILS.join(" o ")}.`);
 function renderAuth() {
   const ok = auth.isValid();
   const mins = auth.minutesLeft();
-  $("auth-status").textContent = ok ? `${auth.email || "Conectado"} · conectado ✓${mins < 10 ? ` (pulsa Renovar: quedan ${mins} min)` : ""}` : auth.email ? `${auth.email} · acceso caducado` : auth.ready ? "Sin conectar" : "Cargando Google…";
-  $("btn-login").textContent = ok ? "Renovar" : "Entrar con Google";
+  $("auth-status").textContent = ok ? `${auth.email || "Conectado"} ✓` : auth.email ? `${auth.email} · hay que reconectar` : auth.ready ? "Google Drive sin conectar" : "Cargando…";
+  $("btn-login").textContent = ok ? "Renovar" : auth.email ? "Reconectar" : "Entrar con Google";
   $("btn-login").disabled = !auth.ready;
+  show($("btn-login"), !ok || mins < 10);
   show($("btn-logout"), ok || !!auth.email);
   $("btn-start").disabled = !ok || !!orphan;
-  $("start-hint").textContent = !ok ? "Entra con Google para empezar." : orphan ? "Reanuda o termina primero la sesión pendiente." : "Al empezar, el iPhone pedirá permiso de cámara y micrófono.";
+  $("start-hint").textContent = !ok ? "Entra con Google para empezar." : orphan ? "Reanuda o termina primero la sesión pendiente." : "";
 }
 async function environmentWarnings() {
   const ua = navigator.userAgent;
@@ -2882,6 +2882,7 @@ async function renderHome() {
   if (orphan) {
     const n = data.find((d) => d.s === orphan)?.photos ?? 0;
     $("resume-info").textContent = `Iniciada el ${fmtDateTime(orphan.startEpoch)} · ${fmtDuration(orphan.heartbeatMs)} de sesión · ${n} fotos`;
+    $("more").open = true;
     $("session-mode").open = true;
   }
   renderAuth();
@@ -2890,7 +2891,8 @@ async function renderHome() {
   const da = draft ? draft.segments.filter((g) => g.endMs != null).length : 0;
   const hasDraft = !!draft && (dn > 0 || da > 0);
   $("btn-prenda").textContent = hasDraft ? "CONTINUAR PRENDA" : "NUEVA PRENDA";
-  $("prenda-hint").textContent = hasDraft ? `Tienes una prenda a medias: ${dn} foto(s) y ${da} audio(s).` : auth.isValid() ? "Haz las fotos con la cámara del iPhone desde aquí y graba el audio." : "Puedes preparar prendas ya; se subirán a Drive cuando entres con Google.";
+  $("prenda-hint").textContent = hasDraft ? `A medias: ${dn} foto(s) y ${da} audio(s).` : "";
+  show($("prenda-hint"), hasDraft);
   const list = $("session-list");
   const frag = document.createDocumentFragment();
   for (const { s, photos, thumb } of data) {
@@ -2942,7 +2944,7 @@ async function renderHome() {
   homeUrlsOld.clear();
   list.innerHTML = "";
   if (frag.childNodes.length) list.appendChild(frag);
-  else list.innerHTML = '<li class="muted">Todavía no hay nada guardado.</li>';
+  show($("list-card"), frag.childNodes.length > 0 || list.childNodes.length > 0);
 }
 async function deleteSessionFlow(s, photos) {
   const inDrive = !!s.drive?.folderId;
@@ -2964,7 +2966,7 @@ async function deleteSessionFlow(s, photos) {
 function renderSync(st, justSaved) {
   if (justSaved && currentScreen === "home") renderHome();
   const pending = st.pendingPhotos + st.pendingAudio;
-  $("home-sync").textContent = !pending && !st.lastError ? auth.isValid() ? "Todo sincronizado" : "Nada pendiente de subir" : st.paused ? `${st.paused} · ${pending} archivo(s) pendientes` : st.lastError ? `Reintentando… (${st.lastError})` : `Subiendo… quedan ${st.pendingPhotos} foto(s) y ${st.pendingAudio} audio(s)`;
+  $("home-sync").textContent = !pending && !st.lastError ? auth.isValid() ? "Todo en Drive" : "" : !navigator.onLine ? `Sin conexión · ${pending} archivo(s) por subir` : !auth.isValid() ? `${pending} archivo(s) por subir: entra con Google` : st.lastError ? `Reintentando la subida…` : `Subiendo… quedan ${pending}`;
   $("sync-count").textContent = pending;
   $("sync-pill").classList.toggle("pause", pending > 0 && (!!st.paused || !!st.lastError));
   if (currentScreen === "summary" && st.working) $("sum-progress").textContent = `${st.working} · quedan ${pending} archivo(s)`;
@@ -3239,7 +3241,6 @@ async function renderPrenda() {
     grid.appendChild(fig);
   });
   $("btn-pick").textContent = importing ? "Guardando foto…" : photos.length ? "📷 HACER OTRA FOTO" : "📷 HACER FOTO";
-  show($("pick-hint"), photos.length === 0);
   const list = $("audio-list");
   list.innerHTML = "";
   audios.forEach((g, i) => {
@@ -3265,7 +3266,6 @@ function renderRecButton(count = prenda.audios().length) {
   b.classList.toggle("secondary", !rec);
   b.textContent = rec ? "■ PARAR GRABACIÓN" : count ? "🎙 GRABAR OTRO AUDIO" : "🎙 GRABAR AUDIO";
   show($("rec-live"), rec);
-  show($("rec-hint"), !rec && count === 0);
 }
 async function onPickFiles(e) {
   const files = [...e.target.files || []];
