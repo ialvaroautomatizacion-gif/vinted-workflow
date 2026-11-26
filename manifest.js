@@ -136,3 +136,60 @@ export function buildSummaryText(s, photos) {
   }
   return lines.join('\n') + '\n';
 }
+
+/** Manifiesto de una prenda (modo sencillo): fotos + audios de la misma carpeta. */
+export function buildPrendaManifest(s, photos) {
+  const valid = photos.filter(p => p.status !== 'deleted').sort((a, b) => (a.order || a.seq) - (b.order || b.seq));
+  const audios = s.segments.filter(g => g.endMs != null && !g.full?.empty).sort((a, b) => (a.order || a.seg) - (b.order || b.seg));
+  const base = `${CONFIG.ROOT_FOLDER_NAME}/${s.dayFolder}/${s.folderName}`;
+  return {
+    schema: 'vinted-workflow/prenda@1',
+    app_version: CONFIG.APP_VERSION,
+    generated_at: isoLocal(Date.now()),
+    item: {
+      id: s.id,
+      number_of_day: s.number,
+      folder: base,
+      status: s.status === 'finished' ? 'guardada' : 'guardando',
+      created_at: isoLocal(s.startEpoch),
+      saved_at: s.endEpoch ? isoLocal(s.endEpoch) : null,
+      timezone: s.timezone,
+      utc_offset_minutes: s.utcOffsetMin,
+      google_account: s.accountEmail || null,
+    },
+    notes: [
+      'Todas las fotos y todos los audios de esta carpeta pertenecen a UNA sola prenda.',
+      'Las fotos se hicieron con la cámara del iPhone; taken_at es la fecha de la foto según sus metadatos (null si no se pudo leer).',
+      'Los audios se grabaron después de hacer las fotos: describen la prenda (marca, talla, medidas, defectos, instrucciones).',
+    ],
+    photos: valid.map(p => ({
+      order: p.order || p.seq,
+      file_name: p.fileName,
+      drive_path: p.driveId ? `${base}/${p.fileName}` : null,
+      drive_file_id: p.driveId || null,
+      original_name: p.originalName || null,
+      taken_at: p.takenAt ? isoLocal(p.takenAt) : null,
+      width: p.width, height: p.height, bytes: p.size, mime_type: p.mime,
+      status: p.driveId ? 'guardada_en_drive' : 'pendiente_de_subir',
+    })),
+    audio: audios.map(g => ({
+      order: g.order || g.seg,
+      file_name: g.fileName,
+      drive_path: g.full?.driveId ? `${base}/${g.fileName}` : null,
+      drive_file_id: g.full?.driveId || null,
+      mime_type: g.mimeType,
+      recorded_at: g.recordedAt ? isoLocal(g.recordedAt) : null,
+      duration_ms: g.endMs - g.startMs,
+      measured_audio_duration_ms: g.measuredMs ?? null,
+      bytes: g.full?.size || g.bytes || null,
+      end_reason: g.endReason === 'usuario' ? 'detenido_por_el_usuario' : g.endReason,
+      status: g.full?.driveId ? 'guardado_en_drive' : 'pendiente_de_subir',
+    })),
+    storage: {
+      all_saved: valid.every(p => p.driveId) && audios.every(g => g.full?.driveId) && s.status === 'finished',
+      verified_against_drive: !!s.verified,
+    },
+    incidents: s.incidents,
+    device: { user_agent: s.userAgent },
+  };
+}

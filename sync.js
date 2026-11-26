@@ -12,13 +12,14 @@ import { db } from './db.js';
 import { drive, DriveError } from './drive.js';
 import { auth } from './auth.js';
 import { allSessions, saveSession, forgetSession, photosOf, updatePhoto, addIncident, validPhotos } from './store.js';
-import { buildManifest, buildSummaryText, pendingAudioSegments } from './manifest.js';
+import { buildManifest, buildPrendaManifest, buildSummaryText, pendingAudioSegments } from './manifest.js';
 import { extFor, fmtDuration, fmtStamp, measureAudioDurationMs, log } from './util.js';
 
 const N = () => CONFIG.AUDIO_CHUNKS_PER_PART;
 const p2 = n => String(n).padStart(2, '0');
 const p4 = n => String(n).padStart(4, '0');
-const isDone = s => s.status === 'failed' || (s.status === 'finished' && (s.verified || s.lossy));
+// Sesiones que la sincronización no toca: fallidas, ya comprobadas y prendas aún en preparación (borrador)
+const isDone = s => s.status === 'failed' || s.status === 'draft' || (s.status === 'finished' && (s.verified || s.lossy));
 
 class SyncEngine {
   constructor() {
@@ -27,6 +28,7 @@ class SyncEngine {
     this.status = { pendingPhotos: 0, pendingAudio: 0, lastError: null, lastOk: null, paused: null, working: null };
     this.manifestThrottle = new Map();
     this.foldersChecked = new Set();
+    this.backoff = new Map(); // sesión → { fails, until } para no insistir cada 5 s si algo falla de forma persistente
   }
   onStatus(fn) { this.listeners.add(fn); }
   emit() { this.listeners.forEach(fn => { try { fn(this.status); } catch (e) { console.error(e); } }); }
@@ -35,9 +37,12 @@ class SyncEngine {
   start() {
     clearInterval(this.timer);
     this.timer = setInterval(() => this.kick(), CONFIG.SYNC_INTERVAL_MS);
-    window.addEventListener('online', () => this.kick());
+    window.addEventListener('online', () => { this.resetBackoff(); this.kick(); });
     this.kick();
   }
+
+  /** Olvida las esperas por fallos anteriores (tras entrar con Google, volver la conexión o guardar algo nuevo). */
+  resetBackoff() { this.backoff.clear(); }
 
   /** Ejecuta fn en exclusiva (nunca dos subidas en paralelo → sin duplicados). */
   exclusive(fn) {
@@ -67,14 +72,26 @@ class SyncEngine {
     for (const s of allSessions()) {
       if (isDone(s)) continue;
       if (this.wrongAccount(s)) { this.status.lastError = `La sesión del ${new Date(s.startEpoch).toLocaleDateString()} pertenece a ${s.accountEmail}: entra con esa cuenta para subirla`; hadError = true; continue; }
+      const bo = this.backoff.get(s.id);
+      if (bo && Date.now() < bo.until) { hadError = true; continue; }
       try {
-        await this.syncSession(s);
+        if (s.status === 'finishing') {
+          // Sesión o prenda ya cerrada: completar subida y comprobación en segundo plano
+          const r = await this._finalize(s);
+          if (!r.ok) throw new DriveError(r.checks.find(c => !c.ok)?.label || 'Guardado incompleto', r.needsLogin ? 401 : r.offline ? 0 : 500);
+          this.listeners.forEach(fn => { try { fn(this.status, s); } catch { /* */ } });
+        } else {
+          await this.syncSession(s);
+        }
         this.status.lastOk = Date.now();
+        this.backoff.delete(s.id);
       } catch (e) {
         hadError = true;
         this.status.lastError = e.message;
         log('sync error', e);
         if (e instanceof DriveError && (e.status === 401 || e.status === 0)) break;
+        const fails = (bo?.fails || 0) + 1;
+        this.backoff.set(s.id, { fails, until: Date.now() + Math.min(120000, 5000 * 2 ** fails) });
       }
     }
     if (!hadError) this.status.lastError = null;
@@ -89,6 +106,7 @@ class SyncEngine {
 
   /** Fragmentos de audio listos para subir que aún no están en Drive */
   pendingParts(g) {
+    if (g.noParts) return []; // audios cortos de una prenda: solo se sube el archivo completo
     return this.completeParts(g).filter(p => !(g.parts || []).some(x => x.part === p && (x.driveId || x.empty)));
   }
 
@@ -127,6 +145,14 @@ class SyncEngine {
         dd.rootId = await drive.ensureFolder(CONFIG.ROOT_FOLDER_NAME, null, 'VW_ROOT');
         await db.kvSet(rootKey, dd.rootId);
       }
+    }
+    if (s.kind === 'prenda') {
+      // VINTED_WORKFLOW/AAAA-MM-DD/PRENDA_NN_HHhMM/  (fotos y audios juntos en la misma carpeta)
+      if (!dd.dayId) dd.dayId = await drive.ensureFolder(s.dayFolder, dd.rootId, `VW_DAY_${s.dayFolder}`);
+      if (!dd.folderId) dd.folderId = await drive.ensureFolder(s.folderName, dd.dayId, `${s.id}_DIR`);
+      dd.fotosId = dd.audioId = dd.folderId;
+      await saveSession(s);
+      return;
     }
     if (!dd.folderId) dd.folderId = await drive.ensureFolder(s.folderName, dd.rootId, `${s.id}_DIR`);
     if (!dd.fotosId) dd.fotosId = await drive.ensureFolder('FOTOS', dd.folderId, `${s.id}_FOTOS`);
@@ -213,7 +239,7 @@ class SyncEngine {
             const m = await measureAudioDurationMs(blob);
             if (m != null) g.measuredMs = m;
           }
-          const fileName = `audio_seg${p2(g.seg)}_completo_t${fmtStamp(g.startMs)}.${extFor(g.mimeType)}`;
+          const fileName = g.fileName || `audio_seg${p2(g.seg)}_completo_t${fmtStamp(g.startMs)}.${extFor(g.mimeType)}`;
           this.working(`Subiendo audio completo del segmento ${g.seg}…`);
           const r = await drive.upload({ blob, name: fileName, parentId: s.drive.audioId, mimeType: g.mimeType.split(';')[0], vwId: `${s.id}_S${g.seg}_FULL` });
           g.full = { fileName, driveId: r.id, size: blob.size, driveSize: r.size, chunks: chunks.length };
@@ -235,7 +261,8 @@ class SyncEngine {
   async writeManifest(s) {
     const photos = await photosOf(s.id);
     s.manifestDirty = false;
-    const blob = new Blob([JSON.stringify(buildManifest(s, photos), null, 2)], { type: 'application/json' });
+    const data = s.kind === 'prenda' ? buildPrendaManifest(s, photos) : buildManifest(s, photos);
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     try {
       if (s.drive.manifestId) {
         try { await drive.updateContent(s.drive.manifestId, blob, 'application/json'); }
@@ -306,7 +333,7 @@ class SyncEngine {
     for (const g of s.segments) {
       if (g.full?.empty) { audioDetail.push(`Segmento ${g.seg}: sin datos (cortado al instante)`); continue; }
       const wall = g.endMs - g.startMs;
-      let line = `Segmento ${g.seg}: ${fmtDuration(wall)}, ${(g.parts || []).filter(x => x.driveId).length} fragmento(s)`;
+      let line = s.kind === 'prenda' ? `${g.fileName || 'audio'}: ${fmtDuration(wall)}` : `Segmento ${g.seg}: ${fmtDuration(wall)}, ${(g.parts || []).filter(x => x.driveId).length} fragmento(s)`;
       if (g.measuredMs != null) {
         const diff = g.measuredMs - wall;
         line += `, duración real ${fmtDuration(g.measuredMs)}`;
@@ -325,14 +352,17 @@ class SyncEngine {
     s.manifestDirty = true;
     try {
       await this.writeManifest(s);
-      const txt = new Blob([buildSummaryText(s, photos)], { type: 'text/plain' });
-      if (s.drive.summaryId) {
-        try { await drive.updateContent(s.drive.summaryId, txt, 'text/plain'); }
-        catch (e) { if (e.status !== 404) throw e; s.drive.summaryId = null; }
+      const prenda = s.kind === 'prenda';
+      if (!prenda) {
+        const txt = new Blob([buildSummaryText(s, photos)], { type: 'text/plain' });
+        if (s.drive.summaryId) {
+          try { await drive.updateContent(s.drive.summaryId, txt, 'text/plain'); }
+          catch (e) { if (e.status !== 404) throw e; s.drive.summaryId = null; }
+        }
+        if (!s.drive.summaryId) s.drive.summaryId = (await drive.upload({ blob: txt, name: 'resumen_sesion.txt', parentId: s.drive.folderId, mimeType: 'text/plain', vwId: `${s.id}_SUMMARY` })).id;
       }
-      if (!s.drive.summaryId) s.drive.summaryId = (await drive.upload({ blob: txt, name: 'resumen_sesion.txt', parentId: s.drive.folderId, mimeType: 'text/plain', vwId: `${s.id}_SUMMARY` })).id;
-      const mOk = (await verifyFile(s.drive.manifestId)) && (await verifyFile(s.drive.summaryId));
-      add(mOk, 'Manifiesto (manifest.json) y resumen_sesion.txt', '');
+      const mOk = (await verifyFile(s.drive.manifestId)) && (prenda || await verifyFile(s.drive.summaryId));
+      add(mOk, prenda ? 'Ficha de la prenda (manifest.json)' : 'Manifiesto (manifest.json) y resumen_sesion.txt', '');
       if (!mOk) { s.status = 'finishing'; s.verified = false; s.lossy = false; s.drive.manifestId = null; s.drive.summaryId = null; }
     } catch (e) {
       s.status = 'finishing'; s.verified = false; s.lossy = false;
@@ -363,6 +393,7 @@ class SyncEngine {
         await db.del('blobs', p.id); await db.del('thumbs', p.id); await db.del('photos', p.id);
       }
       for (const g of s.segments) await db.delChunks(s.id, g.seg);
+      this.backoff.delete(s.id);
       await forgetSession(s.id);
       this.foldersChecked.delete(s.id);
       await this.computePending();

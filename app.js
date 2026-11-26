@@ -10,12 +10,17 @@ import { pickAudioMime, supportedAudioFormats } from './audio.js';
 import { loadSessions, photosOf, thumbOf, validPhotos, addIncident, saveSession } from './store.js';
 import { sync } from './sync.js';
 import { SessionController, finishOrphan } from './session.js';
+import { PrendaController, currentDraft } from './prenda.js';
 import { fmtDuration, fmtDateTime, fmtBytes, escapeHtml, settings } from './util.js';
 
 const $ = id => document.getElementById(id);
 const show = (el, on = true) => el.classList.toggle('hidden', !on);
 
 let controller;
+let prenda;
+let prendaSeq = 0;
+let importing = false;
+const prendaUrls = new Set();
 let orphan = null;
 let photoCount = 0;
 let viewerPhoto = null;
@@ -33,6 +38,7 @@ function setLastThumb(blob) {
   lastThumbUrl = blob ? URL.createObjectURL(blob) : null;
   if (lastThumbUrl) $('last-thumb').src = lastThumbUrl; else $('last-thumb').removeAttribute('src');
 }
+function freePrendaUrls() { prendaUrls.forEach(u => URL.revokeObjectURL(u)); prendaUrls.clear(); }
 function freeGallery() {
   galleryUrls.forEach(u => URL.revokeObjectURL(u)); galleryUrls.clear();
   if (viewerUrl) { URL.revokeObjectURL(viewerUrl); viewerUrl = null; }
@@ -45,6 +51,7 @@ function go(screen) {
   currentScreen = screen;
   document.querySelectorAll('.screen').forEach(s => s.classList.toggle('active', s.id === `screen-${screen}`));
   if (screen !== 'gallery') { show($('viewer'), false); freeGallery(); }
+  if (screen !== 'prenda') freePrendaUrls();
   if (screen === 'home') renderHome();
   window.scrollTo(0, 0);
 }
@@ -126,6 +133,7 @@ async function login({ switchAccount = false } = {}) {
     }
     auth.setEmail(user.emailAddress);
     pauseNoticeShown = false;
+    sync.resetBackoff();
     sync.kick();
     return true;
   } catch (e) {
@@ -180,6 +188,7 @@ async function environmentWarnings() {
 }
 
 // ---------------- Inicio ----------------
+const homeUrls = new Set(), homeUrlsOld = new Set();
 async function renderHome() {
   const my = ++renderSeq;
   renderAuth();
@@ -187,31 +196,53 @@ async function renderHome() {
   const data = [];
   for (const s of sessions) {
     if (s.status === 'failed') continue;
-    data.push({ s, photos: validPhotos(await photosOf(s.id)).length });
+    const ph = validPhotos(await photosOf(s.id));
+    const first = s.kind === 'prenda' && s.status !== 'draft' ? [...ph].sort((a, b) => (a.order || a.seq) - (b.order || b.seq))[0] : null;
+    data.push({ s, photos: ph.length, thumb: first ? await thumbOf(first) : null });
   }
   if (my !== renderSeq) return; // hay un repintado más reciente en marcha
+  homeUrls.forEach(u => homeUrlsOld.add(u)); homeUrls.clear();
 
-  orphan = sessions.find(s => s.status === 'active' && s !== controller?.s) || null;
+  orphan = sessions.find(s => s.kind !== 'prenda' && s.status === 'active' && s !== controller?.s) || null;
   show($('resume-card'), !!orphan);
   if (orphan) {
     const n = data.find(d => d.s === orphan)?.photos ?? 0;
     $('resume-info').textContent = `Iniciada el ${fmtDateTime(orphan.startEpoch)} · ${fmtDuration(orphan.heartbeatMs)} de sesión · ${n} fotos`;
+    $('session-mode').open = true;
   }
   renderAuth();
 
+  // Botón principal: prenda nueva o continuar la que está a medias
+  const draft = currentDraft();
+  const dn = draft ? (data.find(d => d.s === draft)?.photos ?? 0) : 0;
+  const da = draft ? draft.segments.filter(g => g.endMs != null).length : 0;
+  const hasDraft = !!draft && (dn > 0 || da > 0);
+  $('btn-prenda').textContent = hasDraft ? 'CONTINUAR PRENDA' : 'NUEVA PRENDA';
+  $('prenda-hint').textContent = hasDraft ? `Tienes una prenda a medias: ${dn} foto(s) y ${da} audio(s).`
+    : auth.isValid() ? 'Haz las fotos con la cámara del iPhone, elígelas aquí y graba el audio.'
+    : 'Puedes preparar prendas ya; se subirán a Drive cuando entres con Google.';
+
   const list = $('session-list');
   const frag = document.createDocumentFragment();
-  for (const { s, photos } of data) {
-    if (s === controller?.s) continue;
+  for (const { s, photos, thumb } of data) {
+    if (s === controller?.s || s.status === 'draft') continue;
     const li = document.createElement('li');
+    const isPrenda = s.kind === 'prenda';
     const dur = (s.endEpoch || s.startEpoch + (s.heartbeatMs || 0)) - s.startEpoch;
-    const tag = s.verified ? '<span class="tag ok">guardada en Drive</span>'
+    const audios = s.segments.filter(g => !g.full?.empty && (g.chunkCount || 0) > 0).length;
+    const tag = s.verified ? '<span class="tag ok">en Drive ✓</span>'
       : s.lossy ? '<span class="tag pend">guardada con incidencias</span>'
       : s.status === 'active' ? '<span class="tag bad">sin terminar</span>'
       : '<span class="tag pend">pendiente de subir</span>';
-    li.innerHTML = `<div><b>${fmtDateTime(s.startEpoch)}</b> ${tag}</div>
-      <div class="muted">${fmtDuration(dur)} · ${photos} fotos · ${s.segments.filter(g => !g.full?.empty).length} audio(s)</div>
-      <div class="session-actions"></div>`;
+    const title = isPrenda ? `Prenda ${String(s.number || '').padStart(2, '0')} · ${fmtDateTime(s.endEpoch || s.startEpoch)}` : `Sesión · ${fmtDateTime(s.startEpoch)}`;
+    const detail = isPrenda ? `${photos} foto(s) · ${audios} audio(s)` : `${fmtDuration(dur)} · ${photos} fotos · ${audios} audio(s)`;
+    li.innerHTML = `${isPrenda ? '<img class="mini-thumb" alt="">' : ''}<div><div><b>${escapeHtml(title)}</b> ${tag}</div>
+      <div class="muted">${escapeHtml(detail)}</div>
+      <div class="session-actions"></div></div>`;
+    if (isPrenda) {
+      li.className = 'with-thumb';
+      if (thumb) { const u = URL.createObjectURL(thumb); homeUrls.add(u); li.querySelector('img').src = u; }
+    }
     const actions = li.querySelector('.session-actions');
     if (s.drive?.folderId) {
       const a = document.createElement('a');
@@ -232,28 +263,31 @@ async function renderHome() {
     }
     frag.appendChild(li);
   }
+  homeUrlsOld.forEach(u => URL.revokeObjectURL(u)); homeUrlsOld.clear();
   list.innerHTML = '';
   if (frag.childNodes.length) list.appendChild(frag);
-  else list.innerHTML = '<li class="muted">Ninguna todavía.</li>';
+  else list.innerHTML = '<li class="muted">Todavía no hay nada guardado.</li>';
 }
 
 async function deleteSessionFlow(s, photos) {
   const inDrive = !!s.drive?.folderId;
   const needLogin = inDrive && !auth.isValid();
   const pending = !(s.verified || s.lossy);
-  const msg = `¿Eliminar la sesión del ${fmtDateTime(s.startEpoch)} (${photos} fotos)?\n\n`
+  const what = s.kind === 'prenda' ? `la prenda ${String(s.number || '').padStart(2, '0')} del ${fmtDateTime(s.endEpoch || s.startEpoch)}` : `la sesión del ${fmtDateTime(s.startEpoch)}`;
+  const msg = `¿Eliminar ${what} (${photos} fotos)?\n\n`
     + (inDrive ? `Su carpeta de Drive (${s.folderName}) se enviará a la papelera de Drive, donde Google la conserva 30 días por si te arrepientes. ` : 'Todavía no se había subido nada a Drive. ')
-    + 'También se borrará de este móvil. No afecta a ninguna otra sesión ni archivo.'
-    + (pending ? '\n\n⚠️ ATENCIÓN: esta sesión tiene archivos que aún NO se han subido a Drive. Si la eliminas, esos archivos se pierden para siempre.' : '')
+    + 'También se borrará de la app. No afecta a nada más: ni a otras prendas, ni a las fotos de la galería del iPhone.'
+    + (pending ? '\n\n⚠️ ATENCIÓN: tiene archivos que aún NO se han subido a Drive. Si la eliminas, esos archivos se pierden para siempre.' : '')
     + (needLogin ? '\n\nPrimero se abrirá Google para confirmar tu cuenta.' : '');
-  const ok = await dialog({ msg, okText: 'Eliminar sesión', danger: true, onOk: () => (needLogin ? login() : true) });
+  const ok = await dialog({ msg, okText: 'Eliminar', danger: true, onOk: () => (needLogin ? login() : true) });
   if (!ok) return;
   try { await sync.deleteSession(s); }
-  catch (e) { await info('No se pudo eliminar la sesión.\n\n' + (e?.message || e)); }
+  catch (e) { await info('No se pudo eliminar.\n\n' + (e?.message || e)); }
   renderHome();
 }
 
-function renderSync(st) {
+function renderSync(st, justSaved) {
+  if (justSaved && currentScreen === 'home') renderHome();
   const pending = st.pendingPhotos + st.pendingAudio;
   $('home-sync').textContent = !pending && !st.lastError ? (auth.isValid() ? 'Todo sincronizado' : 'Nada pendiente de subir')
     : st.paused ? `${st.paused} · ${pending} archivo(s) pendientes`
@@ -437,14 +471,22 @@ async function openSummary(s, { auto = false } = {}) {
   if (!auto || !summaryState || summaryState.session !== s) summaryState = { session: s, attempts: 0 };
   summaryState.attempts++;
   go('summary');
-  $('sum-title').textContent = 'Guardando sesión…';
-  $('sum-progress').textContent = 'No cierres Safari hasta que termine.';
+  const isPrenda = s.kind === 'prenda';
+  const W = isPrenda ? 'prenda' : 'sesión';
+  $('sum-title').textContent = `Guardando ${W}…`;
+  $('sum-progress').textContent = isPrenda ? 'Puedes seguir con la siguiente prenda: la subida continúa sola mientras Safari esté abierto.' : 'No cierres Safari hasta que termine.';
   show($('btn-sum-retry'), false);
   show($('btn-sum-drive'), false);
+  show($('btn-sum-next'), isPrenda);
   const photos = await photosOf(s.id);
   const valid = validPhotos(photos);
   const audioMs = s.segments.reduce((a, g) => a + ((g.endMs ?? g.startMs) - g.startMs), 0);
-  $('sum-kv').innerHTML = `
+  const audios = s.segments.filter(g => (g.chunkCount || 0) > 0).length;
+  $('sum-kv').innerHTML = isPrenda ? `
+    <dt>Prenda</dt><dd>${String(s.number || '').padStart(2, '0')} · ${fmtDateTime(s.endEpoch || s.startEpoch)}</dd>
+    <dt>Fotos</dt><dd>${valid.length}</dd>
+    <dt>Audio</dt><dd>${audios ? `${audios} (${fmtDuration(audioMs)})` : 'sin audio'}</dd>
+    <dt>Carpeta</dt><dd>${escapeHtml(CONFIG.ROOT_FOLDER_NAME)}/${escapeHtml(s.dayFolder)}/${escapeHtml(s.folderName)}</dd>` : `
     <dt>Inicio</dt><dd>${fmtDateTime(s.startEpoch)}</dd>
     <dt>Fin</dt><dd>${s.endEpoch ? fmtDateTime(s.endEpoch) : '—'}</dd>
     <dt>Duración</dt><dd>${fmtDuration((s.endEpoch || Date.now()) - s.startEpoch)}</dd>
@@ -463,9 +505,11 @@ async function openSummary(s, { auto = false } = {}) {
   const icon = c => c.warn ? '⚠️' : c.ok ? '✅' : (report.needsLogin || report.offline) ? '⏳' : '❌';
   $('sum-checks').innerHTML = report.checks.map(c =>
     `<li>${icon(c)} ${escapeHtml(c.label)}${c.detail ? `<div class="muted small">${escapeHtml(c.detail)}</div>` : ''}</li>`).join('');
-  $('sum-title').textContent = report.ok ? (report.lossy ? 'Sesión guardada con incidencias' : 'Sesión guardada')
+  const G = isPrenda ? 'Prenda guardada' : 'Sesión guardada';
+  $('sum-title').textContent = report.ok ? (report.lossy ? `${G} con incidencias` : G)
     : report.needsLogin ? 'Falta subir a Drive' : report.offline ? 'Esperando conexión' : 'Faltan archivos por guardar';
   $('sum-progress').textContent = report.ok ? 'Todo está en tu Google Drive y comprobado.'
+    : isPrenda ? 'No se ha perdido nada: sigue guardada en la app y se subirá en cuanto se pueda. Puedes continuar con la siguiente.'
     : 'No se ha perdido nada: lo pendiente sigue guardado en este móvil.';
   $('btn-sum-retry').textContent = report.needsLogin ? 'Conectar con Google y subir' : 'Reintentar ahora';
   show($('btn-sum-retry'), !report.ok);
@@ -481,6 +525,144 @@ async function openSummary(s, { auto = false } = {}) {
   }
 }
 
+// ---------------- Prenda (modo sencillo) ----------------
+async function openPrenda() {
+  if (controller.s) return;
+  await prenda.open();
+  go('prenda');
+  try { history.pushState({ vw: 'prenda' }, ''); } catch { /* */ }
+  await renderPrenda();
+}
+
+async function renderPrenda() {
+  const my = ++prendaSeq;
+  if (!prenda.s) return;
+  const photos = await prenda.photos();
+  const audios = prenda.audios();
+  const thumbs = await Promise.all(photos.map(p => thumbOf(p)));
+  const blobs = await Promise.all(audios.map(g => prenda.audioBlob(g)));
+  if (my !== prendaSeq || !prenda.s || currentScreen !== 'prenda') return;
+  freePrendaUrls();
+
+  $('prenda-photo-count').textContent = photos.length ? `(${photos.length})` : '';
+  const grid = $('prenda-grid');
+  grid.innerHTML = '';
+  photos.forEach((p, i) => {
+    const fig = document.createElement('figure');
+    fig.innerHTML = `<img alt="Foto ${i + 1}"><figcaption>${i + 1}</figcaption><button class="rm" aria-label="Quitar foto ${i + 1}">✕</button>`;
+    if (thumbs[i]) { const u = URL.createObjectURL(thumbs[i]); prendaUrls.add(u); fig.querySelector('img').src = u; }
+    fig.querySelector('.rm').onclick = async () => { await prenda.removePhoto(p.id); };
+    grid.appendChild(fig);
+  });
+  $('btn-pick').textContent = importing ? 'Añadiendo fotos…' : photos.length ? 'AÑADIR MÁS FOTOS' : 'ELEGIR FOTOS';
+  show($('pick-hint'), photos.length === 0);
+
+  const list = $('audio-list');
+  list.innerHTML = '';
+  audios.forEach((g, i) => {
+    const li = document.createElement('li');
+    const u = URL.createObjectURL(blobs[i]); prendaUrls.add(u);
+    li.innerHTML = `<audio controls preload="metadata"></audio><span class="dur">${fmtDuration(g.endMs - g.startMs).slice(3)}</span><button class="btn mini secondary">Borrar</button>`;
+    li.querySelector('audio').src = u;
+    li.querySelector('button').onclick = async () => {
+      const ok = await dialog({ msg: `¿Borrar el audio ${i + 1} (${fmtDuration(g.endMs - g.startMs).slice(3)})?`, okText: 'Borrar audio', danger: true });
+      if (ok) await prenda.removeAudio(g);
+    };
+    list.appendChild(li);
+  });
+  renderRecButton(audios.length);
+  $('btn-save').disabled = photos.length === 0 || importing;
+  $('prenda-title').textContent = photos.length || audios.length ? `Prenda: ${photos.length} foto(s), ${audios.length} audio(s)` : 'Prenda nueva';
+}
+
+function renderRecButton(count = prenda.audios().length) {
+  const rec = prenda.recording;
+  const b = $('btn-rec');
+  b.classList.toggle('recording', rec);
+  b.classList.toggle('secondary', !rec);
+  b.textContent = rec ? '■ PARAR GRABACIÓN' : count ? '🎙 GRABAR OTRO AUDIO' : '🎙 GRABAR AUDIO';
+  show($('rec-live'), rec);
+  show($('rec-hint'), !rec && count === 0);
+}
+
+async function onPickFiles(e) {
+  const files = [...(e.target.files || [])];
+  e.target.value = ''; // permite volver a elegir las mismas fotos
+  if (!files.length || !prenda.s || importing) return;
+  importing = true;
+  $('btn-save').disabled = true;
+  try {
+    const r = await prenda.addFiles(files, (i, n) => { $('btn-pick').textContent = `Añadiendo foto ${i} de ${n}…`; });
+    if (r.skipped) toast(`${r.skipped} archivo(s) no se han podido añadir (solo se admiten fotos).`);
+  } catch (err) { toast('No se pudieron añadir las fotos: ' + (err?.message || err)); }
+  finally { importing = false; renderPrenda(); }
+}
+
+async function onRecTap() {
+  if (!prenda.s) return;
+  const b = $('btn-rec');
+  if (b.disabled) return;
+  b.disabled = true;
+  try {
+    if (prenda.recording) await prenda.stopRecording('usuario');
+    else {
+      $('rec-time').textContent = '00:00';
+      await prenda.startRecording(radio('audiofmt') || 'mp4');
+      renderRecButton();
+    }
+  } catch (e) {
+    const denied = e?.name === 'NotAllowedError';
+    await info((denied ? 'No hay permiso para usar el micrófono.' : 'No se pudo grabar: ' + (e?.message || e))
+      + (denied ? '\n\nPara permitirlo: toca el icono de la izquierda de la barra de direcciones de Safari › Ajustes del sitio web › Micrófono › Permitir.' : ''));
+  } finally { b.disabled = false; }
+}
+
+async function savePrenda() {
+  if (!prenda.s || importing) return;
+  const photos = await prenda.photos();
+  if (!photos.length) return;
+  if (!prenda.recording && prenda.audios().length === 0) {
+    const ok = await dialog({ msg: 'Esta prenda no tiene audio.\n\n¿Guardarla solo con las fotos?', okText: 'Guardar sin audio', cancelText: 'Volver' });
+    if (!ok) return;
+  }
+  $('btn-save').disabled = true;
+  try {
+    const s = await prenda.save();
+    sync.resetBackoff();
+    openSummary(s);
+  } catch (e) { await info('No se pudo guardar la prenda: ' + (e?.message || e)); renderPrenda(); }
+}
+
+async function discardPrenda() {
+  if (!prenda.s) return;
+  const ok = await dialog({ msg: '¿Descartar esta prenda?\n\nSe quitan de la app las fotos elegidas y los audios grabados. Las fotos siguen en la galería de tu iPhone.', okText: 'Descartar', danger: true });
+  if (!ok) return;
+  await prenda.discard();
+  go('home');
+}
+
+async function leavePrenda() {
+  if (prenda.recording) {
+    const ok = await dialog({ msg: 'Se está grabando un audio. ¿Pararlo y volver al inicio?\n\nLa prenda se queda guardada a medias para continuarla luego.', okText: 'Parar y salir' });
+    if (!ok) return;
+  }
+  await prenda.leave();
+  go('home');
+}
+
+const prendaUi = {
+  onChange: () => { if (currentScreen === 'prenda') renderPrenda(); },
+  onLevel: lvl => { if (lvl != null) $('rec-meter-bar').style.width = `${Math.round(lvl * 100)}%`; },
+  onRecTick: ms => { $('rec-time').textContent = fmtDuration(ms).slice(3); },
+  onRecStopped: (reason, saved) => {
+    renderRecButton();
+    if (reason !== 'usuario') toast(saved
+      ? 'La grabación se ha cortado (iOS ha parado el micrófono). Lo grabado está guardado: puedes escucharlo y grabar otro audio para continuar.'
+      : 'iOS ha parado el micrófono antes de grabar nada. Vuelve a pulsar GRABAR AUDIO.', 9000);
+  },
+  onWarn: msg => toast(msg, 10000),
+};
+
 // ---------------- Arranque ----------------
 async function main() {
   $('app-version').textContent = `Versión ${CONFIG.APP_VERSION}`;
@@ -490,6 +672,7 @@ async function main() {
   refreshCameras();
 
   controller = new SessionController($('preview'), ui);
+  prenda = new PrendaController(prendaUi);
 
   auth.onChange(renderAuth);
   sync.onStatus(renderSync);
@@ -498,6 +681,13 @@ async function main() {
   $('btn-login').onclick = () => login().then(renderHome);
   $('btn-logout').onclick = () => login({ switchAccount: true }).then(renderHome);
   $('btn-start').onclick = startSession;
+  $('btn-prenda').onclick = openPrenda;
+  $('btn-prenda-back').onclick = leavePrenda;
+  $('file-input').onchange = onPickFiles;
+  $('btn-rec').onclick = onRecTap;
+  $('btn-save').onclick = savePrenda;
+  $('btn-discard').onclick = discardPrenda;
+  $('btn-sum-next').onclick = () => { clearTimeout(openSummary.timer); openPrenda(); };
   $('btn-photo').onclick = onPhotoTap;
   $('btn-gallery').onclick = openGallery;
   $('btn-gal-back').onclick = () => go('session');
@@ -559,6 +749,11 @@ async function main() {
   });
   // Gesto "atrás" de Safari: durante la sesión no debe sacar de la página
   window.addEventListener('popstate', () => {
+    if (currentScreen === 'prenda' && prenda.s) {
+      if (prenda.recording) { try { history.pushState({ vw: 'prenda' }, ''); } catch { /* */ } toast('Se está grabando. Para salir, pulsa primero PARAR GRABACIÓN.', 3500); }
+      else leavePrenda();
+      return;
+    }
     if (!controller.s) return;
     try { history.pushState({ vw: 'session' }, ''); } catch { /* */ }
     if (currentScreen === 'gallery') go('session');
@@ -567,7 +762,7 @@ async function main() {
   // Si Safari restaura la página desde su caché de navegación, se recarga para partir de un estado limpio
   window.addEventListener('pageshow', (e) => { if (e.persisted) location.reload(); });
   // Errores inesperados: quedan anotados en el diagnóstico de la sesión
-  const note = (kind, detail) => { const s = controller?.s; if (s) { addIncident(s, controller.clock, kind, detail); saveSession(s); } };
+  const note = (kind, detail) => { const s = controller?.s || prenda?.s; if (s) { addIncident(s, controller?.s ? controller.clock : null, kind, detail); saveSession(s); } };
   window.addEventListener('error', e => note('error_javascript', e.message));
   window.addEventListener('unhandledrejection', e => note('error_promesa', e.reason?.message || e.reason));
 
