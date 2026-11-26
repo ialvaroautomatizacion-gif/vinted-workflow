@@ -2,9 +2,10 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex, nofollow">
+<meta name="format-detection" content="telephone=no">
 <!-- Seguridad: solo se permite código propio y los servicios oficiales de Google -->
 <meta http-equiv="Content-Security-Policy" content="
   default-src 'self';
@@ -19,7 +20,7 @@
   form-action 'none'">
 <meta name="theme-color" content="#111418">
 <title>Vinted Workflow</title>
-<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="app.css?v=0.2.0">
 </head>
 <body>
 
@@ -30,14 +31,17 @@
     <p class="muted" id="app-version"></p>
   </header>
 
+  <div class="card warn hidden" id="env-warning"></div>
+
   <div class="card" id="auth-card">
     <div class="row">
-      <div>
+      <div class="grow">
         <div class="label">Google Drive</div>
-        <div id="auth-status" class="value">Sin conectar</div>
+        <div id="auth-status" class="value">Cargando…</div>
       </div>
       <button id="btn-login" class="btn secondary">Entrar con Google</button>
     </div>
+    <button id="btn-logout" class="link-btn hidden">Cambiar de cuenta</button>
   </div>
 
   <div class="card warn hidden" id="resume-card">
@@ -62,10 +66,21 @@
     <ul id="session-list" class="session-list"><li class="muted">Ninguna todavía.</li></ul>
   </div>
 
-  <details class="card small">
-    <summary>Ajustes de prueba</summary>
-    <label class="opt"><input type="radio" name="photomode" value="auto" checked> Fotos: automático (máxima calidad si el iPhone lo permite)</label>
-    <label class="opt"><input type="radio" name="photomode" value="frame"> Fotos: fotograma de la vista previa (más compatible)</label>
+  <details class="card small" id="settings">
+    <summary>Ajustes</summary>
+    <div class="label top">Fotos</div>
+    <label class="opt"><input type="radio" name="photomode" value="auto" checked> Automático: foto completa si el iPhone lo permite</label>
+    <label class="opt"><input type="radio" name="photomode" value="frame"> Fotograma de la vista previa (más compatible)</label>
+    <div class="label top">Calidad de la cámara</div>
+    <label class="opt"><input type="radio" name="quality" value="high" checked> Alta (4K)</label>
+    <label class="opt"><input type="radio" name="quality" value="normal"> Normal (1080p): menos batería y calor</label>
+    <div class="label top">Cámara</div>
+    <select id="camera-select" class="select"><option value="">Trasera (automática)</option></select>
+    <p class="muted" id="camera-hint">Las demás cámaras aparecen aquí después de la primera sesión.</p>
+    <div class="label top">Formato del audio</div>
+    <label class="opt"><input type="radio" name="audiofmt" value="auto" checked> Automático (recomendado)</label>
+    <label class="opt"><input type="radio" name="audiofmt" value="mp4"> M4A / MP4 (se reproduce directamente en el iPhone)</label>
+    <div class="label top">Este dispositivo</div>
     <p class="muted" id="caps-info"></p>
   </details>
 </section>
@@ -76,12 +91,17 @@
   <div class="flash" id="flash"></div>
 
   <div class="topbar">
-    <div class="pill rec"><span class="dot"></span><span id="timer">00:00:00</span></div>
-    <div class="pill" id="mic-pill"><span class="mic-icon">🎙</span><span class="meter"><span id="meter-bar"></span></span></div>
-    <div class="pill" id="sync-pill">☁︎ <span id="sync-count">0</span></div>
+    <div class="pill rec" id="rec-pill"><span class="dot"></span><span class="rec-label">REC</span><span id="timer">00:00:00</span></div>
+    <div class="pill" id="mic-pill"><span aria-hidden="true">🎙</span><span class="meter"><span id="meter-bar"></span></span></div>
+    <button class="pill" id="sync-pill" aria-label="Estado de la subida">☁︎ <span id="sync-count">0</span></button>
   </div>
 
   <div class="banner hidden" id="banner"></div>
+
+  <div class="sidebar">
+    <button id="btn-zoom" class="round-btn hidden" aria-label="Zoom">1×</button>
+    <button id="btn-torch" class="round-btn hidden" aria-label="Linterna">🔦</button>
+  </div>
 
   <div class="bottombar">
     <button id="btn-gallery" class="thumb-btn" aria-label="Galería">
@@ -95,10 +115,11 @@
   <!-- Capa de recuperación -->
   <div class="overlay hidden" id="recover-overlay">
     <div class="overlay-box">
-      <h2>Grabación interrumpida</h2>
+      <h2 id="recover-title">Grabación interrumpida</h2>
       <p id="recover-msg">iOS ha pausado la cámara o el micrófono.</p>
       <button id="btn-recover" class="btn huge primary">REANUDAR GRABACIÓN</button>
       <p class="muted small">Todo lo grabado hasta ahora está guardado en el móvil.</p>
+      <button id="btn-recover-end" class="link-btn">Terminar la sesión y guardar</button>
     </div>
   </div>
 </section>
@@ -106,10 +127,10 @@
 <!-- ================= GALERÍA ================= -->
 <section id="screen-gallery" class="screen">
   <header class="gal-header">
-    <button id="btn-gal-back" class="btn secondary">← Volver</button>
+    <button id="btn-gal-back" class="btn secondary">← Volver a la cámara</button>
     <span id="gal-title">Fotos</span>
   </header>
-  <p class="muted small center">El audio sigue grabando mientras miras la galería.</p>
+  <p class="muted small center">🎙 El audio sigue grabando mientras miras la galería.</p>
   <div id="gallery-grid" class="grid"></div>
   <div class="viewer hidden" id="viewer">
     <img id="viewer-img" alt="">
@@ -123,7 +144,7 @@
 
 <!-- ================= FINALIZACIÓN ================= -->
 <section id="screen-summary" class="screen">
-  <header class="home-header"><h1 id="sum-title">Guardando sesión…</h1></header>
+  <header class="home-header"><h1 id="sum-title">Guardando sesión…</h1><p class="muted" id="sum-progress"></p></header>
   <div class="card">
     <dl class="kv" id="sum-kv"></dl>
   </div>
@@ -131,12 +152,10 @@
     <div class="label">Comprobaciones</div>
     <ul id="sum-checks" class="checks"></ul>
   </div>
-  <div class="btn-row">
-    <button id="btn-sum-retry" class="btn secondary hidden">Reintentar subida</button>
-    <a id="btn-sum-drive" class="btn primary hidden" target="_blank" rel="noopener">Abrir carpeta en Drive</a>
-  </div>
+  <button id="btn-sum-retry" class="btn huge primary hidden">Reintentar</button>
+  <a id="btn-sum-drive" class="btn secondary wide hidden" target="_blank" rel="noopener">Abrir carpeta en Drive</a>
   <details class="card small">
-    <summary>Diagnóstico (incidencias)</summary>
+    <summary>Diagnóstico (incidencias técnicas)</summary>
     <pre id="sum-incidents"></pre>
   </details>
   <button id="btn-sum-home" class="btn secondary wide">Volver al inicio</button>
@@ -154,6 +173,6 @@
 </div>
 
 <script src="https://accounts.google.com/gsi/client" async></script>
-<script type="module" src="app.js"></script>
+<script type="module" src="bundle.js?v=0.2.0"></script>
 </body>
 </html>

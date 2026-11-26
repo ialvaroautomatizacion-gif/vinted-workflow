@@ -8,42 +8,56 @@
  */
 import { CONFIG } from './config.js';
 
-const CANDIDATES = ['audio/webm;codecs=opus', 'audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm'];
+const WEBM = ['audio/webm;codecs=opus', 'audio/webm'];
+const MP4 = ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4'];
 
-export function pickAudioMime() {
+/** @param {'auto'|'mp4'|'webm'} prefer */
+export function pickAudioMime(prefer = 'auto') {
   if (typeof MediaRecorder === 'undefined') return null;
-  for (const m of CANDIDATES) { try { if (MediaRecorder.isTypeSupported(m)) return m; } catch { /* */ } }
+  const order = prefer === 'mp4' ? [...MP4, ...WEBM] : [...WEBM, ...MP4];
+  for (const m of order) { try { if (MediaRecorder.isTypeSupported(m)) return m; } catch { /* */ } }
   return '';
+}
+
+export function supportedAudioFormats() {
+  const ok = list => list.some(m => { try { return MediaRecorder.isTypeSupported(m); } catch { return false; } });
+  if (typeof MediaRecorder === 'undefined') return { webm: false, mp4: false };
+  return { webm: ok(WEBM), mp4: ok(MP4) };
 }
 
 export class SegmentRecorder {
   /**
    * @param {MediaStreamTrack} track pista de audio
-   * @param {object} o { clock, onChunk(blob, startMs, endMs), onError(msg) }
+   * @param {object} o { clock, prefer, onChunk(blob, startMs, endMs), onError(msg) }
    */
-  constructor(track, { clock, onChunk, onError }) {
-    this.track = track; this.clock = clock; this.onChunk = onChunk; this.onError = onError;
+  constructor(track, { clock, prefer = 'auto', onChunk, onError }) {
+    this.track = track; this.clock = clock; this.prefer = prefer; this.onChunk = onChunk; this.onError = onError;
     this.rec = null; this.startMs = null; this.lastEnd = null; this.stopping = null;
+    this.lastChunkAt = 0;
   }
 
   start() {
-    const mime = pickAudioMime();
+    const mime = pickAudioMime(this.prefer);
     const opts = { audioBitsPerSecond: CONFIG.AUDIO_BITRATE };
     if (mime) opts.mimeType = mime;
-    this.rec = new MediaRecorder(new MediaStream([this.track]), opts);
+    try { this.rec = new MediaRecorder(new MediaStream([this.track]), opts); }
+    catch { this.rec = new MediaRecorder(new MediaStream([this.track])); } // sin opciones, por si el navegador las rechaza
     this.mimeType = this.rec.mimeType || mime || 'audio/mp4';
     this.startMs = this.clock.elapsed();
     this.lastEnd = this.startMs;
+    this.lastChunkAt = performance.now();
     this.rec.addEventListener('start', () => {
       // Hora real de arranque (más precisa que la del momento de la llamada)
       const t = this.clock.elapsed();
       this.startMs = t; this.lastEnd = t;
+      this.lastChunkAt = performance.now();
     });
     this.rec.addEventListener('dataavailable', (e) => {
       const end = this.clock.elapsed();
       if (e.data && e.data.size > 0) {
         const start = this.lastEnd;
         this.lastEnd = end;
+        this.lastChunkAt = performance.now();
         this.onChunk(e.data, start, end);
       }
     });
@@ -54,12 +68,16 @@ export class SegmentRecorder {
 
   get state() { return this.rec?.state || 'inactive'; }
 
+  /** Milisegundos desde el último trozo recibido (para detectar un grabador parado). */
+  get silenceMs() { return performance.now() - this.lastChunkAt; }
+
   /** Detiene y espera al último trozo. */
   stop() {
-    if (!this.rec || this.rec.state === 'inactive') return Promise.resolve(this.lastEnd);
     if (this.stopping) return this.stopping;
     this.stopping = new Promise(resolve => {
-      const done = () => setTimeout(() => resolve(this.lastEnd), 50); // el último dataavailable llega antes de 'stop'
+      // Si ya se paró solo (iOS cortó la pista), su último trozo puede estar todavía de camino
+      if (!this.rec || this.rec.state === 'inactive') return setTimeout(() => resolve(this.lastEnd), 250);
+      const done = () => setTimeout(() => resolve(this.lastEnd), 80); // el último dataavailable llega antes de 'stop'
       this.rec.addEventListener('stop', done, { once: true });
       try { this.rec.stop(); } catch { done(); }
       setTimeout(() => resolve(this.lastEnd), 4000); // seguridad

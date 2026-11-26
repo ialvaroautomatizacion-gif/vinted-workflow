@@ -1,30 +1,36 @@
 /**
  * Sincronización con Google Drive.
  * - Sube fotos y fragmentos de audio a medida que existen (si hay conexión y acceso).
- * - Reintenta sola; nunca crea duplicados (búsqueda previa por vwId).
+ * - Reintenta sola; nunca crea duplicados (búsqueda previa por vwId) y nunca sube dos cosas a la vez.
  * - Al terminar una sesión: sube los audios completos, comprueba en Drive que cada archivo existe con el
- *   tamaño correcto y solo entonces libera el espacio local. NUNCA borra nada de Drive.
+ *   tamaño correcto, vuelve a subir lo que falte y solo entonces libera el espacio local.
+ * - NUNCA borra nada de Drive por su cuenta. Lo único que elimina algo es deleteSession(), que el usuario
+ *   lanza a mano y que envía la carpeta de esa sesión a la papelera de Drive.
  */
 import { CONFIG } from './config.js';
 import { db } from './db.js';
 import { drive, DriveError } from './drive.js';
 import { auth } from './auth.js';
-import { allSessions, saveSession, photosOf, addIncident } from './store.js';
-import { buildManifest, buildSummaryText } from './manifest.js';
-import { extFor, fmtDuration, log } from './util.js';
+import { allSessions, saveSession, forgetSession, photosOf, updatePhoto, addIncident, validPhotos } from './store.js';
+import { buildManifest, buildSummaryText, pendingAudioSegments } from './manifest.js';
+import { extFor, fmtDuration, fmtStamp, measureAudioDurationMs, log } from './util.js';
 
 const N = () => CONFIG.AUDIO_CHUNKS_PER_PART;
-const tStr = ms => fmtDuration(ms).replace(/:/g, '-') + '.' + String(ms % 1000).padStart(3, '0');
+const p2 = n => String(n).padStart(2, '0');
+const p4 = n => String(n).padStart(4, '0');
+const isDone = s => s.status === 'failed' || (s.status === 'finished' && (s.verified || s.lossy));
 
 class SyncEngine {
   constructor() {
     this.timer = null; this.queued = null; this.lockP = null;
     this.listeners = new Set();
-    this.status = { pendingPhotos: 0, pendingAudio: 0, lastError: null, lastOk: null, paused: null };
+    this.status = { pendingPhotos: 0, pendingAudio: 0, lastError: null, lastOk: null, paused: null, working: null };
     this.manifestThrottle = new Map();
+    this.foldersChecked = new Set();
   }
   onStatus(fn) { this.listeners.add(fn); }
   emit() { this.listeners.forEach(fn => { try { fn(this.status); } catch (e) { console.error(e); } }); }
+  working(txt) { this.status.working = txt; this.emit(); }
 
   start() {
     clearInterval(this.timer);
@@ -43,57 +49,89 @@ class SyncEngine {
   /** Programa una ronda de sincronización (como mucho una en cola). */
   kick() {
     if (this.queued) return this.queued;
-    this.queued = this.exclusive(async () => { this.queued = null; await this.runOnce(); });
+    this.queued = this.exclusive(async () => { this.queued = null; await this.runOnce(); }).catch(e => log('sync', e));
     return this.queued;
+  }
+
+  blockedReason() {
+    if (!navigator.onLine) return 'Sin conexión: se subirá al volver la cobertura';
+    if (!auth.isValid()) return 'Subida a Drive en pausa (acceso caducado). Todo se sigue guardando en el móvil';
+    return null;
   }
 
   async runOnce() {
     await this.computePending();
-    if (!navigator.onLine) { this.status.paused = 'Sin conexión: se subirá al volver la cobertura'; return this.emit(); }
-    if (!auth.isValid()) { this.status.paused = 'Acceso a Drive caducado: toca para reconectar'; return this.emit(); }
-    this.status.paused = null;
+    this.status.paused = this.blockedReason();
+    if (this.status.paused) return this.emit();
+    let hadError = false;
     for (const s of allSessions()) {
-      if ((s.status === 'finished' && s.verified) || s.status === 'failed') continue;
+      if (isDone(s)) continue;
+      if (this.wrongAccount(s)) { this.status.lastError = `La sesión del ${new Date(s.startEpoch).toLocaleDateString()} pertenece a ${s.accountEmail}: entra con esa cuenta para subirla`; hadError = true; continue; }
       try {
         await this.syncSession(s);
-        this.status.lastError = null; this.status.lastOk = Date.now();
+        this.status.lastOk = Date.now();
       } catch (e) {
+        hadError = true;
         this.status.lastError = e.message;
         log('sync error', e);
-        if (e instanceof DriveError && e.status === 401) break;
+        if (e instanceof DriveError && (e.status === 401 || e.status === 0)) break;
       }
     }
+    if (!hadError) this.status.lastError = null;
+    this.status.paused = this.blockedReason();
+    this.status.working = null;
     await this.computePending();
-    this.emit();
+  }
+
+  wrongAccount(s) {
+    return !!(s.accountEmail && auth.email && s.accountEmail.toLowerCase() !== auth.email.toLowerCase());
+  }
+
+  /** Fragmentos de audio listos para subir que aún no están en Drive */
+  pendingParts(g) {
+    return this.completeParts(g).filter(p => !(g.parts || []).some(x => x.part === p && (x.driveId || x.empty)));
   }
 
   async computePending() {
     let pp = 0, pa = 0;
     for (const s of allSessions()) {
-      if ((s.status === 'finished' && s.verified) || s.status === 'failed') continue;
-      pp += (await photosOf(s.id)).filter(p => p.status !== 'deleted' && !p.driveId).length;
-      for (const g of s.segments) {
-        pa += this.completeParts(g).filter(p => !g.parts.some(x => x.part === p)).length;
-        if (g.endMs != null && !g.full?.driveId) pa += 1;
-      }
+      if (isDone(s)) continue;
+      pp += validPhotos(await photosOf(s.id)).filter(p => !p.driveId && !p.lost).length;
+      for (const g of s.segments) pa += this.pendingParts(g).length;
+      pa += pendingAudioSegments(s).length;
     }
     this.status.pendingPhotos = pp; this.status.pendingAudio = pa;
     this.emit();
   }
 
-  async ensureFolders(s) {
+  /** Crea (o localiza) las carpetas de la sesión. Si alguien las borró o envió a la papelera, las vuelve a crear. */
+  async ensureFolders(s, forceCheck = false) {
     const d = s.drive;
-    if (!d.rootId) {
-      d.rootId = await db.kvGet('rootFolderId');
-      if (!d.rootId) {
-        d.rootId = await drive.ensureFolder(CONFIG.ROOT_FOLDER_NAME, null, 'VW_ROOT');
-        await db.kvSet('rootFolderId', d.rootId);
+    const email = (auth.email || '').toLowerCase();
+    if (!s.accountEmail && email) s.accountEmail = email;
+    const rootKey = `rootFolderId:${email}`;
+
+    if (forceCheck || !this.foldersChecked.has(s.id)) {
+      if (d.rootId && !(await drive.folderAlive(d.rootId))) { d.rootId = null; await db.kvSet(rootKey, null); }
+      if (d.folderId && !(await drive.folderAlive(d.folderId))) {
+        addIncident(s, null, 'carpeta_de_drive_no_encontrada', 'se vuelve a crear y se suben de nuevo los archivos');
+        s.drive = { rootId: d.rootId };
+      }
+      this.foldersChecked.add(s.id);
+    }
+    const dd = s.drive;
+    if (!dd.rootId) {
+      dd.rootId = await db.kvGet(rootKey);
+      if (dd.rootId && !(await drive.folderAlive(dd.rootId))) dd.rootId = null;
+      if (!dd.rootId) {
+        dd.rootId = await drive.ensureFolder(CONFIG.ROOT_FOLDER_NAME, null, 'VW_ROOT');
+        await db.kvSet(rootKey, dd.rootId);
       }
     }
-    if (!d.folderId) d.folderId = await drive.ensureFolder(s.folderName, d.rootId, `${s.id}_DIR`);
-    if (!d.fotosId) d.fotosId = await drive.ensureFolder('FOTOS', d.folderId, `${s.id}_FOTOS`);
-    if (!d.audioId) d.audioId = await drive.ensureFolder('AUDIO', d.folderId, `${s.id}_AUDIO`);
-    if (!d.partsId) d.partsId = await drive.ensureFolder('fragmentos', d.audioId, `${s.id}_PARTS`);
+    if (!dd.folderId) dd.folderId = await drive.ensureFolder(s.folderName, dd.rootId, `${s.id}_DIR`);
+    if (!dd.fotosId) dd.fotosId = await drive.ensureFolder('FOTOS', dd.folderId, `${s.id}_FOTOS`);
+    if (!dd.audioId) dd.audioId = await drive.ensureFolder('AUDIO', dd.folderId, `${s.id}_AUDIO`);
+    if (!dd.partsId) dd.partsId = await drive.ensureFolder('fragmentos', dd.audioId, `${s.id}_PARTS`);
     await saveSession(s);
   }
 
@@ -108,61 +146,79 @@ class SyncEngine {
     return out;
   }
 
-  async syncSession(s) {
-    await this.ensureFolders(s);
-    const photos = await photosOf(s.id);
+  async syncSession(s, { forceCheck = false } = {}) {
+    await this.ensureFolders(s, forceCheck);
 
     // 1) Fotos
-    for (const p of photos) {
+    for (const p of await photosOf(s.id)) {
       if (p.status === 'deleted') {
         if (p.driveId && !p.movedToDeleted) {
           if (!s.drive.deletedId) { s.drive.deletedId = await drive.ensureFolder('_ELIMINADAS', s.drive.fotosId, `${s.id}_DEL`); await saveSession(s); }
-          await drive.move(p.driveId, s.drive.deletedId, s.drive.fotosId);
-          p.movedToDeleted = true; await db.put('photos', p);
+          try { await drive.move(p.driveId, s.drive.deletedId, s.drive.fotosId); }
+          catch (e) { if (e.status !== 404) throw e; }
+          await updatePhoto(p.id, x => { x.movedToDeleted = true; });
+          s.manifestDirty = true;
         }
         continue;
       }
-      if (p.driveId) continue;
+      if (p.driveId || p.lost) continue;
       const rec = await db.get('blobs', p.id);
-      if (!rec?.blob) { addIncident(s, null, 'foto_sin_datos_locales', p.fileName); continue; }
+      if (!rec?.blob) {
+        await updatePhoto(p.id, x => { x.lost = true; });
+        addIncident(s, null, 'foto_sin_copia_local', p.fileName);
+        continue;
+      }
+      this.working(`Subiendo foto ${p.seq}…`);
       const r = await drive.upload({ blob: rec.blob, name: p.fileName, parentId: s.drive.fotosId, mimeType: p.mime, vwId: p.id,
         props: { sessionId: s.id, elapsedMs: String(p.elapsedMs) } });
-      p.driveId = r.id; p.driveSize = r.size;
-      await db.put('photos', p);
+      // Atómico: si mientras tanto el usuario borró la foto, se conserva el borrado y se moverá en la siguiente ronda
+      const saved = await updatePhoto(p.id, x => { x.driveId = r.id; x.driveSize = r.size; });
       s.manifestDirty = true;
+      if (saved?.status === 'deleted') this.kickSoon = true;
     }
 
     // 2) Fragmentos de audio
     for (const g of s.segments) {
       g.parts = g.parts || [];
-      for (const part of this.completeParts(g)) {
-        if (g.parts.some(x => x.part === part && x.driveId)) continue;
+      for (const part of this.pendingParts(g)) {
         const from = part * N(), to = Math.min((part + 1) * N(), g.chunkCount) - 1;
         const chunks = await db.chunksRange(s.id, g.seg, from, to);
-        if (chunks.length !== to - from + 1) { addIncident(s, null, 'trozos_de_audio_incompletos', `seg ${g.seg} parte ${part + 1}`); continue; }
-        const blob = new Blob(chunks.map(c => c.blob), { type: g.mimeType });
-        const fileName = `seg${String(g.seg).padStart(2, '0')}_parte${String(part + 1).padStart(4, '0')}_t${tStr(chunks[0].startMs)}.${extFor(g.mimeType)}`;
-        const r = await drive.upload({ blob, name: fileName, parentId: s.drive.partsId, mimeType: g.mimeType.split(';')[0],
-          vwId: `${s.id}_S${g.seg}_P${part}` });
         g.parts = g.parts.filter(x => x.part !== part);
-        g.parts.push({ part: part + 0, fromSeq: from, toSeq: to, startMs: chunks[0].startMs, endMs: chunks[chunks.length - 1].endMs,
-          size: blob.size, fileName, driveId: r.id, driveSize: r.size });
+        if (!chunks.length) {
+          addIncident(s, null, 'fragmento_de_audio_sin_copia_local', `segmento ${g.seg}, fragmento ${part + 1}`);
+          g.parts.push({ part, fromSeq: from, toSeq: to, empty: true });
+        } else {
+          if (chunks.length !== to - from + 1) addIncident(s, null, 'fragmento_de_audio_incompleto', `segmento ${g.seg}, fragmento ${part + 1}: ${chunks.length}/${to - from + 1} trozos`);
+          const blob = new Blob(chunks.map(c => c.blob), { type: g.mimeType });
+          const fileName = `seg${p2(g.seg)}_parte${p4(part + 1)}_t${fmtStamp(chunks[0].startMs)}.${extFor(g.mimeType)}`;
+          this.working(`Subiendo audio (minuto ${Math.floor(chunks[0].startMs / 60000)})…`);
+          const r = await drive.upload({ blob, name: fileName, parentId: s.drive.partsId, mimeType: g.mimeType.split(';')[0],
+            vwId: `${s.id}_S${g.seg}_P${part}` });
+          g.parts.push({ part, fromSeq: from, toSeq: to, startMs: chunks[0].startMs, endMs: chunks[chunks.length - 1].endMs,
+            size: blob.size, fileName, driveId: r.id, driveSize: r.size });
+        }
         g.parts.sort((a, b) => a.part - b.part);
         s.manifestDirty = true;
         await saveSession(s);
       }
       // 3) Audio completo del segmento (cuando el segmento ha terminado)
-      if (g.endMs != null && !g.full?.driveId && g.chunkCount > 0) {
-        const chunks = await db.chunksRange(s.id, g.seg, 0, g.chunkCount - 1);
-        if (chunks.length !== g.chunkCount) { addIncident(s, null, 'audio_completo_incompleto', `seg ${g.seg}: ${chunks.length}/${g.chunkCount}`); }
-        const blob = new Blob(chunks.map(c => c.blob), { type: g.mimeType });
-        const fileName = `audio_seg${String(g.seg).padStart(2, '0')}_completo_t${tStr(g.startMs)}.${extFor(g.mimeType)}`;
-        const r = await drive.upload({ blob, name: fileName, parentId: s.drive.audioId, mimeType: g.mimeType.split(';')[0], vwId: `${s.id}_S${g.seg}_FULL` });
-        g.full = { fileName, driveId: r.id, size: blob.size, driveSize: r.size, chunks: chunks.length };
+      if (g.endMs != null && !g.full?.driveId && !g.full?.empty) {
+        const chunks = g.chunkCount > 0 ? await db.chunksRange(s.id, g.seg, 0, g.chunkCount - 1) : [];
+        if (!chunks.length) {
+          g.full = { empty: true };
+        } else {
+          if (chunks.length !== g.chunkCount) addIncident(s, null, 'audio_completo_con_trozos_perdidos', `segmento ${g.seg}: ${chunks.length}/${g.chunkCount}`);
+          const blob = new Blob(chunks.map(c => c.blob), { type: g.mimeType });
+          if (g.measuredMs == null) {
+            const m = await measureAudioDurationMs(blob);
+            if (m != null) g.measuredMs = m;
+          }
+          const fileName = `audio_seg${p2(g.seg)}_completo_t${fmtStamp(g.startMs)}.${extFor(g.mimeType)}`;
+          this.working(`Subiendo audio completo del segmento ${g.seg}…`);
+          const r = await drive.upload({ blob, name: fileName, parentId: s.drive.audioId, mimeType: g.mimeType.split(';')[0], vwId: `${s.id}_S${g.seg}_FULL` });
+          g.full = { fileName, driveId: r.id, size: blob.size, driveSize: r.size, chunks: chunks.length };
+        }
         s.manifestDirty = true;
-        await saveSession(s);
-      } else if (g.endMs != null && g.chunkCount === 0 && !g.full) {
-        g.full = { fileName: null, driveId: null, size: 0, empty: true };
         await saveSession(s);
       }
     }
@@ -173,6 +229,7 @@ class SyncEngine {
       await this.writeManifest(s);
       this.manifestThrottle.set(s.id, Date.now());
     }
+    if (this.kickSoon) { this.kickSoon = false; setTimeout(() => this.kick(), 200); }
   }
 
   async writeManifest(s) {
@@ -180,73 +237,136 @@ class SyncEngine {
     s.manifestDirty = false;
     const blob = new Blob([JSON.stringify(buildManifest(s, photos), null, 2)], { type: 'application/json' });
     try {
-      if (s.drive.manifestId) await drive.updateContent(s.drive.manifestId, blob, 'application/json');
-      else s.drive.manifestId = (await drive.upload({ blob, name: 'manifest.json', parentId: s.drive.folderId, mimeType: 'application/json', vwId: `${s.id}_MANIFEST` })).id;
+      if (s.drive.manifestId) {
+        try { await drive.updateContent(s.drive.manifestId, blob, 'application/json'); }
+        catch (e) { if (e.status !== 404) throw e; s.drive.manifestId = null; }
+      }
+      if (!s.drive.manifestId) s.drive.manifestId = (await drive.upload({ blob, name: 'manifest.json', parentId: s.drive.folderId, mimeType: 'application/json', vwId: `${s.id}_MANIFEST` })).id;
       await saveSession(s);
     } catch (e) { s.manifestDirty = true; throw e; }
   }
 
   /**
    * Cierre de una sesión terminada: sube todo, comprueba en Drive y genera el resumen.
-   * Devuelve un informe con cada comprobación.
+   * Devuelve { ok, needsLogin, offline, checks:[{ok, warn, label, detail}] }.
    */
-  finalize(s) { return this.exclusive(() => this._finalize(s)); }
+  finalize(s) { return this.exclusive(() => this._finalize(s)).finally(() => { this.status.working = null; this.computePending(); }); }
 
   async _finalize(s) {
     const report = { ok: false, checks: [] };
-    const add = (ok, label, detail = '') => report.checks.push({ ok, label, detail });
-    if (!navigator.onLine) { add(false, 'Conexión a Internet', 'Sin conexión. Todo sigue guardado en el móvil; pulsa Reintentar cuando tengas cobertura.'); return report; }
-    if (!auth.isValid()) { add(false, 'Acceso a Google Drive', 'Ha caducado. Pulsa Reintentar para volver a entrar (no se pierde nada).'); return report; }
+    const add = (ok, label, detail = '', warn = false) => report.checks.push({ ok, label, detail, warn });
+    if (!navigator.onLine) { report.offline = true; add(false, 'Sin conexión a Internet', 'Todo sigue guardado en el móvil. Se reintentará solo al volver la cobertura.'); return report; }
+    if (!auth.isValid()) { report.needsLogin = true; add(false, 'Hay que volver a conectar con Google', 'El acceso dura 1 hora por seguridad. No se ha perdido nada: pulsa el botón para subir lo que falta.'); return report; }
+    if (this.wrongAccount(s)) { report.needsLogin = true; add(false, 'Cuenta de Google distinta', `Esta sesión empezó a guardarse en ${s.accountEmail}. Entra con esa cuenta.`); return report; }
 
-    try { await this.syncSession(s); }
-    catch (e) { add(false, 'Subida a Drive', e.message); return report; }
+    let photos, valid, missing = [], audioBad = [], lost = [];
+    // Hasta 2 pasadas: si la comprobación detecta que falta algo y hay copia local, se vuelve a subir
+    try {
+      for (let pass = 1; pass <= 2; pass++) {
+        await this.syncSession(s, { forceCheck: true });
+        this.working('Comprobando archivos en Drive…');
+        photos = await photosOf(s.id);
+        valid = validPhotos(photos);
+        missing = []; audioBad = []; lost = valid.filter(p => p.lost);
+        let healed = 0;
 
-    const photos = await photosOf(s.id);
-    const valid = photos.filter(p => p.status !== 'deleted');
-
-    // Comprobación real contra Drive
-    let photosOk = 0; const missing = [];
-    for (const p of valid) {
-      const blob = (await db.get('blobs', p.id))?.blob;
-      const ok = await verifyFile(p.driveId, blob?.size ?? p.size);
-      if (ok) photosOk++; else missing.push(p.fileName);
+        for (const p of valid) {
+          if (p.lost) continue;
+          const local = (await db.get('blobs', p.id))?.blob;
+          if (await verifyFile(p.driveId, local?.size ?? p.size)) continue;
+          missing.push(p.fileName);
+          if (local) { await updatePhoto(p.id, x => { x.driveId = null; }); healed++; }
+          else { await updatePhoto(p.id, x => { x.lost = true; }); lost.push(p); }
+        }
+        for (const g of s.segments) {
+          if (g.full?.empty) continue;
+          if (!(await verifyFile(g.full?.driveId, g.full?.size))) { audioBad.push(`segmento ${g.seg} (completo)`); if (g.full) g.full.driveId = null; healed++; }
+          for (const pt of g.parts || []) {
+            if (pt.empty) continue;
+            if (!(await verifyFile(pt.driveId, pt.size))) { audioBad.push(`segmento ${g.seg}, fragmento ${pt.part + 1}`); pt.driveId = null; healed++; }
+          }
+        }
+        await saveSession(s);
+        if (!healed) break;
+        if (pass === 1) addIncident(s, null, 'archivos_resubidos_tras_comprobacion', `${missing.length} foto(s), ${audioBad.length} audio(s)`);
+      }
+    } catch (e) {
+      if (e.status === 401) report.needsLogin = true;
+      if (e.status === 0) report.offline = true;
+      add(false, 'Subida a Drive interrumpida', (e.message || e) + '. No se ha perdido nada; se puede reintentar.');
+      await saveSession(s);
+      return report;
     }
-    add(missing.length === 0, `Fotos válidas en Drive: ${photosOk}/${valid.length}`, missing.length ? 'Faltan: ' + missing.join(', ') : '');
 
-    let audioOk = true; const audioDetail = [];
+    const okPhotos = valid.length - missing.length - lost.filter(p => !missing.includes(p.fileName)).length;
+    add(missing.length === 0 && lost.length === 0, `Fotos válidas en Drive: ${okPhotos}/${valid.length}`,
+      [missing.length ? 'Faltan: ' + missing.join(', ') : '', lost.length ? `Sin copia local (no recuperables): ${lost.map(p => p.fileName).join(', ')}` : ''].filter(Boolean).join(' · '));
+
+    const audioDetail = [], durWarn = [];
     for (const g of s.segments) {
-      if (g.full?.empty) { audioDetail.push(`Segmento ${g.seg}: sin datos (interrumpido al instante)`); continue; }
-      const fullOk = await verifyFile(g.full?.driveId, g.full?.size);
-      let partsOk = 0;
-      for (const pt of g.parts || []) if (await verifyFile(pt.driveId, pt.size)) partsOk++;
-      const expectedParts = this.completeParts(g).length;
-      if (!fullOk || partsOk !== expectedParts) audioOk = false;
-      audioDetail.push(`Segmento ${g.seg} (${fmtDuration(g.endMs - g.startMs)}): completo ${fullOk ? '✓' : '✗'}, fragmentos ${partsOk}/${expectedParts}`);
+      if (g.full?.empty) { audioDetail.push(`Segmento ${g.seg}: sin datos (cortado al instante)`); continue; }
+      const wall = g.endMs - g.startMs;
+      let line = `Segmento ${g.seg}: ${fmtDuration(wall)}, ${(g.parts || []).filter(x => x.driveId).length} fragmento(s)`;
+      if (g.measuredMs != null) {
+        const diff = g.measuredMs - wall;
+        line += `, duración real ${fmtDuration(g.measuredMs)}`;
+        if (Math.abs(diff) > Math.max(4000, wall * 0.01)) durWarn.push(`Segmento ${g.seg}: el archivo dura ${fmtDuration(g.measuredMs)} pero se grabó durante ${fmtDuration(wall)} (${diff > 0 ? '+' : '−'}${Math.round(Math.abs(diff) / 1000)} s)`);
+      }
+      audioDetail.push(line);
     }
-    add(audioOk, `Audio en Drive: ${s.segments.length} segmento(s)`, audioDetail.join(' · '));
-    if (s.gaps.length) add(true, `Huecos sin audio: ${s.gaps.length}`, s.gaps.map(g => `${fmtDuration(g.fromMs)}→${fmtDuration(g.toMs)} (${g.reason})`).join(' · '));
+    const audioOk = audioBad.length === 0;
+    add(audioOk, `Audio en Drive: ${s.segments.filter(g => !g.full?.empty).length} archivo(s) completo(s)`, audioOk ? audioDetail.join(' · ') : 'Faltan: ' + audioBad.join(', '));
+    if (durWarn.length) add(true, 'Aviso: la duración del audio no coincide con el tiempo grabado', durWarn.join(' · ') + '. Los archivos están guardados, pero avísame: puede ser un fallo de grabación de iOS.', true);
+    else if (s.segments.some(g => g.measuredMs != null)) add(true, 'Duración real del audio comprobada', '');
+    if (s.gaps.length) add(true, `Cortes de audio durante la sesión: ${s.gaps.length}`, s.gaps.map(g => `${fmtDuration(g.fromMs)} → ${fmtDuration(g.toMs)} (${g.reason})`).join(' · '), s.gaps.some(g => g.toMs - g.fromMs > 3000));
 
-    const allOk = missing.length === 0 && audioOk;
-    if (allOk) { s.status = 'finished'; s.verified = true; }
+    const allUploaded = missing.length === 0 && audioOk;
+    if (allUploaded) { s.status = 'finished'; s.verified = lost.length === 0; s.lossy = lost.length > 0; }
     s.manifestDirty = true;
     try {
       await this.writeManifest(s);
       const txt = new Blob([buildSummaryText(s, photos)], { type: 'text/plain' });
-      if (s.drive.summaryId) await drive.updateContent(s.drive.summaryId, txt, 'text/plain');
-      else s.drive.summaryId = (await drive.upload({ blob: txt, name: 'resumen_sesion.txt', parentId: s.drive.folderId, mimeType: 'text/plain', vwId: `${s.id}_SUMMARY` })).id;
-      const mOk = await verifyFile(s.drive.manifestId);
+      if (s.drive.summaryId) {
+        try { await drive.updateContent(s.drive.summaryId, txt, 'text/plain'); }
+        catch (e) { if (e.status !== 404) throw e; s.drive.summaryId = null; }
+      }
+      if (!s.drive.summaryId) s.drive.summaryId = (await drive.upload({ blob: txt, name: 'resumen_sesion.txt', parentId: s.drive.folderId, mimeType: 'text/plain', vwId: `${s.id}_SUMMARY` })).id;
+      const mOk = (await verifyFile(s.drive.manifestId)) && (await verifyFile(s.drive.summaryId));
       add(mOk, 'Manifiesto (manifest.json) y resumen_sesion.txt', '');
-      if (!mOk) { s.status = 'finishing'; s.verified = false; }
+      if (!mOk) { s.status = 'finishing'; s.verified = false; s.lossy = false; s.drive.manifestId = null; s.drive.summaryId = null; }
     } catch (e) {
-      s.status = 'finishing'; s.verified = false;
+      s.status = 'finishing'; s.verified = false; s.lossy = false;
       add(false, 'Manifiesto', e.message);
     }
     await saveSession(s);
 
-    report.ok = s.verified;
+    report.ok = s.status === 'finished';
+    report.lossy = !!s.lossy;
     if (report.ok) await freeLocalSpace(s, photos);
-    this.computePending();
     return report;
+  }
+
+  /**
+   * Eliminación MANUAL de una sesión completa (la pide el usuario, con confirmación en la interfaz).
+   * Envía a la papelera de Drive únicamente la carpeta de esa sesión y borra sus datos del móvil.
+   */
+  deleteSession(s) {
+    return this.exclusive(async () => {
+      if (s.drive?.folderId) {
+        if (!navigator.onLine) throw new Error('Sin conexión: no se puede eliminar la carpeta de Drive ahora.');
+        if (!auth.isValid()) throw new DriveError('Hay que entrar con Google para eliminar la carpeta de Drive.', 401);
+        if (this.wrongAccount(s)) throw new Error(`Esta sesión está en la cuenta ${s.accountEmail}. Entra con ella para eliminarla.`);
+        try { await drive.trashSessionFolder(s.drive.folderId, s.id); }
+        catch (e) { if (e.status !== 404) throw e; } // ya no existe en Drive
+      }
+      for (const p of await photosOf(s.id)) {
+        await db.del('blobs', p.id); await db.del('thumbs', p.id); await db.del('photos', p.id);
+      }
+      for (const g of s.segments) await db.delChunks(s.id, g.seg);
+      await forgetSession(s.id);
+      this.foldersChecked.delete(s.id);
+      await this.computePending();
+    });
   }
 }
 
@@ -257,13 +377,16 @@ async function verifyFile(id, expectedSize) {
     if (f.trashed) return false;
     if (expectedSize != null && Number(f.size) !== Number(expectedSize)) return false;
     return true;
-  } catch { return false; }
+  } catch (e) {
+    if (e.status === 404) return false;
+    throw e; // sin conexión / acceso caducado: no es que falte el archivo
+  }
 }
 
 /** Solo tras la comprobación en Drive: libera fotos grandes y trozos de audio del móvil (se conservan miniaturas). */
 async function freeLocalSpace(s, photos) {
-  for (const p of photos) { if (p.driveId || p.status === 'deleted') await db.del('blobs', p.id); }
-  for (const g of s.segments) for (let i = 0; i < (g.chunkCount || 0); i++) await db.del('chunks', [s.id, g.seg, i]);
+  for (const p of photos) { if (p.driveId || p.status === 'deleted' || p.lost) await db.del('blobs', p.id); }
+  for (const g of s.segments) await db.delChunks(s.id, g.seg);
   s.localFreed = true;
   await saveSession(s);
 }

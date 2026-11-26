@@ -1,6 +1,8 @@
-# Vinted Workflow — prototipo 0.1
+# Vinted Workflow — versión 0.2.0
 
 Aplicación web para iPhone (Safari). La cámara se queda abierta, puedes hacer todas las fotos que quieras y el micrófono graba sin parar desde **EMPEZAR SESIÓN** hasta **TERMINAR SESIÓN**. Todo se guarda en tu Google Drive, con una carpeta por sesión.
+
+**Enlace de la app:** https://ialvaroautomatizacion-gif.github.io/vinted-workflow/
 
 ## Cómo funciona
 
@@ -13,76 +15,88 @@ iPhone (Safari) ── página estática (GitHub Pages, HTTPS)
            VINTED_WORKFLOW/SESION_AAAA-MM-DD_HHMMSS/
              FOTOS/            foto_0001_t00-01-23.456.jpg …
              FOTOS/_ELIMINADAS las fotos que borraste (no cuentan)
-             AUDIO/            audio_seg01_completo_….webm/.m4a
+             AUDIO/            audio_seg01_completo_….webm (o .m4a)
              AUDIO/fragmentos/ trozos de 1 min (copia de seguridad progresiva)
              manifest.json     línea temporal completa para Claude
              resumen_sesion.txt
 ```
 
-**Por qué no se usa Apps Script:** Google bloquea la cámara y el micrófono dentro de las web apps de Apps Script, y su propia documentación recomienda alojar esa parte fuera. No hace falta servidor propio ni Apps Script: la página habla directamente con Drive usando tu cuenta.
+**Por qué no se usa Apps Script:** Google bloquea la cámara y el micrófono dentro de las web apps de Apps Script, y su propia documentación recomienda alojar esa parte fuera. No hace falta servidor propio: la página habla directamente con Drive usando tu cuenta.
 
 ## Seguridad: qué protege qué
 
 | Riesgo | Protección |
 |---|---|
-| Que otra persona use la app con su cuenta | La app de Google Cloud está en modo **Prueba** y solo pueden entrar los **usuarios de prueba** que añadas. Además, `ALLOWED_EMAILS` hace que la página rechace cualquier otra cuenta. |
-| Que la app toque otros archivos de tu Drive | Permiso **drive.file**: la app solo ve y modifica los archivos que ella misma ha creado. No puede leer ni borrar nada más. |
+| Que otra persona use la app con su cuenta | La app de Google Cloud está en modo **Prueba** y solo pueden entrar los **usuarios de prueba**. Además, `ALLOWED_EMAILS` (en `config.js`) hace que la página rechace cualquier otra cuenta. |
+| Que la app toque otros archivos de tu Drive | Permiso **drive.file**: la app solo ve y modifica los archivos que ella misma ha creado. |
 | Enlaces públicos | La app no comparte nada. Los archivos son privados de tu cuenta. |
-| Claves en el código | No hay ninguna. El *Client ID* no es secreto: Google solo lo acepta desde tu dominio autorizado. |
-| Código malicioso inyectado | Hay una política de seguridad (CSP) que solo permite el código propio y el de accounts.google.com. |
-| Borrados | La app **nunca borra nada de Drive**. Una foto eliminada se mueve a `FOTOS/_ELIMINADAS`. En el móvil solo se libera espacio después de comprobar que cada archivo está en Drive con el tamaño correcto. |
+| Claves en el código | No hay ninguna. El *Client ID* no es secreto: Google solo lo acepta desde el dominio autorizado. |
+| Código ajeno inyectado | Política de seguridad (CSP): solo se ejecuta el código propio y el de accounts.google.com. |
+| Borrados | La app **nunca borra nada por su cuenta**. Una foto eliminada se mueve a `FOTOS/_ELIMINADAS`. Una sesión solo se elimina si pulsas **Eliminar** y confirmas; su carpeta va a la papelera de Drive, donde Google la guarda 30 días. En el móvil solo se libera espacio después de comprobar que cada archivo está en Drive con el tamaño correcto. |
 
-El código de la página es visible en GitHub (GitHub Pages gratis necesita un repositorio público), pero no contiene datos ni secretos. Para retirar el acceso en cualquier momento: https://myaccount.google.com/permissions
+El código de la página es visible en GitHub (GitHub Pages gratis exige repositorio público), pero no contiene datos ni secretos. Para retirar el acceso de la app a tu cuenta: https://myaccount.google.com/permissions
 
----
+## Configuración ya hecha
 
-## Paso 1 — Google Cloud (unos 10 minutos)
+- **Google Cloud**, proyecto `vinted-workflow`: API de Drive activada; pantalla de consentimiento en modo Prueba; usuario de prueba `ialvaroautomatizacion@gmail.com`; permiso `drive.file`; cliente OAuth web con origen `https://ialvaroautomatizacion-gif.github.io`.
+- **GitHub Pages**: rama `main`, carpeta raíz.
 
-Entra en https://console.cloud.google.com con la cuenta cuyo Drive vas a usar.
+**Para añadir otro correo** (por ejemplo, el correo dedicado): añádelo en Google Cloud › Google Auth Platform › Público › Usuarios de prueba, y en `ALLOWED_EMAILS` de `config.js`; después hay que regenerar `bundle.js` (ver "Cambiar el código").
 
-1. **Crea un proyecto:** selector de proyecto → *Proyecto nuevo* → nombre `vinted-workflow` → Crear.
-2. **Activa la API de Drive:** *APIs y servicios › Biblioteca* → busca **Google Drive API** → *Habilitar*.
-3. **Configura la pantalla de consentimiento:** *Google Auth Platform* (o *APIs y servicios › Pantalla de consentimiento de OAuth*) → *Comenzar*.
-   - Nombre de la app: `Vinted Workflow`. Correo de asistencia: el tuyo.
-   - Público: **Externo**.
-   - Datos de contacto: el tuyo → Crear.
-4. **Público / Audience:** comprueba que el estado de publicación es **Prueba** (*Testing*). **No pulses "Publicar".** En *Usuarios de prueba* → *Add users* → escribe tu correo actual (y más adelante el correo dedicado).
-5. **Acceso a datos / Data access:** *Agregar o quitar permisos* → marca `.../auth/drive.file` → Actualizar → Guardar.
-6. **Clientes / Credenciales:** *Crear cliente* → tipo **Aplicación web** → nombre `vinted-workflow-web`.
-   - *Orígenes autorizados de JavaScript* → añade exactamente `https://ialvaroautomatizacion-gif.github.io` (sin barra al final).
-   - Para pruebas en el ordenador, opcional: `http://localhost:8000`.
-   - No hace falta ningún *URI de redireccionamiento*.
-   - Crear → copia el **ID de cliente** (termina en `.apps.googleusercontent.com`).
-7. Abre `config.js` y rellena:
-   ```js
-   CLIENT_ID: 'xxxxxxxx.apps.googleusercontent.com',
-   ALLOWED_EMAILS: ['tu.correo@gmail.com'],
-   ```
+Dos cosas normales en modo Prueba: al entrar, Google avisa de que "no ha verificado esta app" (pulsa *Continuar*) y vuelve a pedir el permiso cada 7 días.
 
-Como la app está en modo Prueba, al entrar por primera vez Google avisará de que "no ha verificado esta app". Es normal: pulsa *Continuar*.
+## Uso en el iPhone
 
-## Paso 2 — Publicar en GitHub Pages
+1. Abre el enlace en **Safari** (no dentro de WhatsApp, Gmail u otra app).
+2. **Entrar con Google** → *Continuar* → deja marcada la casilla de acceso a los archivos de Drive.
+3. **EMPEZAR SESIÓN** → *Permitir* cámara y micrófono.
+4. Trabaja: **HACER FOTO** cuando quieras, y habla con normalidad. La miniatura de la izquierda abre la galería, donde puedes revisar y eliminar fotos; el audio sigue grabando.
+5. **TERMINAR SESIÓN** → espera a ver "Sesión guardada" con todas las comprobaciones en ✅.
 
-1. En GitHub crea un repositorio **público** y vacío llamado `vinted-workflow` (sin README).
-2. Sube todos los archivos de esta carpeta a la raíz del repositorio.
-3. En el repositorio: *Settings › Pages* → *Source*: **Deploy from a branch** → *Branch*: `main` / `(root)` → Save.
-4. En 1-2 minutos la app estará en: **https://ialvaroautomatizacion-gif.github.io/vinted-workflow/**
+Consejos: móvil enchufado, wifi, y no salir de Safari durante la sesión.
 
-Cada cambio que se suba al repositorio se publica solo.
+### Indicadores de la pantalla de sesión
 
-## Paso 3 — Primera apertura en el iPhone
+- **● REC + cronómetro**: sesión activa. Si se pone rojo fijo, la grabación está interrumpida.
+- **🎙 + barra**: nivel del micrófono. Si la barra parpadea en gris, iOS aún no deja medir el nivel (se activa al tocar la pantalla); la grabación no depende de ella.
+- **☁︎ + número**: archivos pendientes de subir. En naranja = subida en pausa (sin cobertura o acceso de Google caducado). No se pierde nada: se sube al terminar.
+- **1× / 🔦**: zoom y linterna, solo si el iPhone los ofrece a Safari.
 
-1. Abre el enlace en **Safari** (no en Chrome ni dentro de otra app).
-2. Pulsa **Entrar con Google** → elige tu cuenta → Continuar → permite el acceso a los archivos de Drive creados por la app.
-3. Abre **Ajustes de prueba**. La línea de abajo dice qué admite tu iPhone; mándame una captura.
-4. Pulsa **EMPEZAR SESIÓN** → *Permitir* cámara y micrófono.
-   - Si los rechazaste por error: icono **aA** de la barra de direcciones → *Ajustes del sitio web* → Cámara y Micrófono: Permitir.
+### Ajustes (en la pantalla inicial)
 
----
+- **Fotos**: automático (foto completa si Safari admite `takePhoto()`, si no fotograma) o siempre fotograma.
+- **Calidad**: 4K o 1080p (menos batería y calor).
+- **Cámara**: tras la primera sesión aparecen las cámaras del iPhone, por si prefieres otra lente.
+- **Formato del audio**: automático (WebM/Opus si está disponible) o M4A.
+- **Este dispositivo**: lo que admite tu iPhone. Útil para diagnosticar.
+
+## Qué pasa si algo falla
+
+| Situación | Qué hace la app |
+|---|---|
+| Sin cobertura | Guarda en el móvil y sube sola al volver la conexión. Si ocurre al terminar, la pantalla final espera y reintenta sola. |
+| Llamada, bloqueo, cambio de app | iOS para cámara y micro. Al volver, la app reanuda sola (o pide un toque) en un segmento de audio nuevo. El corte queda anotado en el manifiesto. |
+| iOS silencia el micrófono un momento | Cierra el segmento de audio y abre otro al volver el sonido, para que fotos y audio sigan cuadrando. |
+| El grabador deja de entregar audio | Un vigilante lo detecta en 16 s y reinicia la captura. |
+| Safari se cierra o se recarga la página | Al abrir la app sale **Sesión sin terminar → REANUDAR** (o *Terminar y guardar*), con las fotos y el cronómetro de antes. Se pierden como mucho los ~5 s de audio que no se habían guardado. |
+| Pasa 1 h desde que entraste con Google | Google caduca el acceso cada hora. La subida se pausa, todo sigue guardándose en el móvil, y al terminar pulsas *Conectar con Google y subir*. |
+| Drive devuelve errores pasajeros | Reintenta sola, sin duplicar archivos. |
+| Alguien borra o manda a la papelera la carpeta de la sesión antes de terminar | Al cerrar la sesión se detecta, se crea de nuevo y se vuelven a subir los archivos desde el móvil. |
+| Se borran los datos de Safari o se pierde el móvil antes de subir | Se pierde lo que no estuviera ya en Drive. Por eso se sube durante la sesión. |
+
+## Comprobaciones al terminar
+
+La pantalla final solo dice "Sesión guardada" si: (1) cada foto válida existe en Drive con su tamaño exacto, (2) cada fragmento y cada archivo completo de audio existe con su tamaño exacto, (3) el manifiesto y el resumen están subidos. Además mide la **duración real** de cada audio y avisa (⚠️) si no coincide con el tiempo grabado: es la forma de detectar un fallo de grabación de iOS.
+
+## Cómo encajan audio y fotos (para Claude)
+
+- Cada foto tiene `elapsed_ms`: milisegundos desde el inicio de la sesión, medidos en el instante del toque.
+- Cada segmento de audio tiene `start_elapsed_ms`. Un instante T de la sesión está en el segundo `(T − start_elapsed_ms)/1000` de ese archivo.
+- Normalmente hay **un único segmento**. Solo se abre otro si algo interrumpe la grabación, y el hueco queda en `audio.gaps` con su motivo.
+- Los fragmentos de `AUDIO/fragmentos/`, unidos en orden, son idénticos byte a byte al archivo completo (`cat seg01_parte*.webm > seg01.webm`).
+- `measured_audio_duration_ms` es la duración real del archivo; `incidents` es el registro técnico de todo lo ocurrido.
 
 ## Prueba de aceptación (30 minutos, iPhone 13 Pro + Safari)
-
-Hazla con el móvil **enchufado** y **wifi**. No cambies de app salvo en el paso 6.
 
 | Min | Qué haces | Qué dices en voz alta |
 |---|---|---|
@@ -91,69 +105,54 @@ Hazla con el móvil **enchufado** y **wifi**. No cambies de app salvo en el paso
 | 3 | Foto | "Foto dos" |
 | 4–9 | Nada (silencio 5 min) | — |
 | 9 | Foto | "Foto tres" |
-| 10 | Galería → borra la foto dos | "He borrado la dos" |
+| 10 | Galería → elimina la foto dos | "He borrado la dos" |
 | 12–20 | Una foto cada 2 min | "Foto cuatro", "Foto cinco"… |
-| 20 | Botón de inicio del iPhone 10 s y vuelve a Safari | "Vuelvo de la interrupción" |
-| 21–30 | Fotos sueltas y habla con normalidad | Describe una prenda inventada |
+| 20 | Sal a la pantalla de inicio del iPhone 10 s y vuelve a Safari | "Vuelvo de la interrupción" |
+| 21–30 | Fotos sueltas, habla con normalidad | Describe una prenda inventada |
 | 30+ | TERMINAR SESIÓN | — |
 
-**Qué debe pasar:**
-- El cronómetro, el punto rojo y la barra del micrófono se mueven durante toda la sesión. La barra debe reaccionar cuando hablas.
-- Al volver en el minuto 20, la grabación se reanuda sola o aparece **REANUDAR GRABACIÓN**. Las dos cosas son válidas: el corte queda anotado.
-- En la pantalla final, todas las comprobaciones salen en ✅.
-- En Drive aparece `VINTED_WORKFLOW/SESION_…` con fotos, audio, `manifest.json` y `resumen_sesion.txt`.
+Debe pasar: cronómetro y REC activos todo el rato; al volver en el minuto 20 la grabación sigue o se reanuda; pantalla final con todo en ✅ (un ⚠️ por el corte del minuto 20 es normal).
 
-**Después, mándame:**
-1. La captura de *Ajustes de prueba*.
-2. La pantalla final, con *Diagnóstico* desplegado.
-3. El nombre de la carpeta de la sesión.
-
-Yo reviso los archivos en tu Drive, transcribo el audio y compruebo que cada "foto N" dicha en voz alta cae en el `elapsed_ms` de su foto (margen ±0,5 s).
-
----
-
-## Cómo encaja audio y fotos (para Claude)
-
-- Cada foto tiene `elapsed_ms`: milisegundos desde el inicio de la sesión, medidos en el instante del toque.
-- Cada segmento de audio tiene `start_elapsed_ms`. Un instante T de la sesión está en el segundo `(T − start_elapsed_ms)/1000` de ese archivo.
-- Normalmente hay **un único segmento**. Solo se abre otro si iOS corta la grabación, y el hueco queda en `audio.gaps`.
-- Los fragmentos de `AUDIO/fragmentos/`, unidos en orden, son idénticos byte a byte al archivo completo (comprobado en las pruebas). Si el completo faltara, se reconstruye con `cat seg01_parte*.webm > seg01.webm`.
-
-## Qué se recupera si algo falla
-
-| Situación | Qué pasa |
-|---|---|
-| Sin cobertura | Todo se guarda en el móvil y se sube solo al volver la conexión. |
-| Llamada, bloqueo, cambio de app | iOS para cámara y micro. Al volver, la app reanuda (o te lo pide con un toque) en un segmento nuevo. El hueco queda anotado. |
-| Safari se cierra o se recarga la página | Al abrir la app sale **Sesión sin terminar → REANUDAR**, con las fotos y el cronómetro de antes. Se pierden como máximo los ~5 s de audio que no se habían guardado. |
-| Se borran los datos de Safari o se pierde el móvil antes de subir | Se pierde lo que no estuviera ya en Drive. Por eso se sube durante la sesión. |
-| Pasa más de ~1 h desde que entraste con Google | Google caduca el acceso cada hora. La subida se pausa (el icono ☁︎ se pone naranja), pero todo sigue guardándose en el móvil. Al terminar, *Reintentar* te pide entrar otra vez y se sube todo. Si reconectas en mitad de la sesión, la ventana de Google puede pausar un momento la cámara; la app la reanuda. |
+Después envía: captura de *Ajustes › Este dispositivo*, captura de la pantalla final con *Diagnóstico* abierto, y el nombre de la carpeta de la sesión.
 
 ## Limitaciones conocidas
 
-1. **La cámara nativa de iOS no se puede dejar abierta desde una web.** Se cierra tras cada foto y vuelve a la página. Por eso la cámara va integrada en la app y no se cierra hasta TERMINAR.
-2. **Calidad de foto:** si Safari admite `takePhoto()`, la foto sale a resolución completa del sensor. Si no, sale un fotograma de hasta 4K (8 MP), sin el procesado HDR de la app Cámara. La línea de *Ajustes de prueba* dice cuál de las dos usa tu iPhone.
-3. **Hay que mantener Safari delante y la pantalla encendida.** La app evita el bloqueo automático, pero si sales de Safari, iOS corta la cámara y probablemente el micro.
-4. **Batería y calor:** una hora de cámara activa consume mucho. Trabaja con el cargador puesto.
-5. **No usar como app de pantalla de inicio** de momento. En modo app instalada iOS es más agresivo cortando el micro. Mejor desde Safari.
+1. **La cámara nativa de iOS no se puede dejar abierta desde una web.** Por eso la cámara va integrada en la app.
+2. **Calidad de foto:** foto completa del sensor si Safari admite `takePhoto()`; si no, fotograma de hasta 4K (8 MP), sin el procesado HDR de la app Cámara.
+3. **Safari delante y pantalla encendida.** La app evita el bloqueo automático, pero si sales de Safari iOS corta la cámara y quizá el micro.
+4. **Acceso de Google de 1 hora.** En sesiones más largas la subida se completa al terminar, con un toque.
+5. **Batería y calor:** una hora de cámara activa consume mucho. Con calor, usa calidad 1080p.
 6. **Precisión temporal:** ±0,5 s entre la foto y el audio.
-7. **Borrar sesiones** desde la app y la **integración con Claude** llegan en fases posteriores. Esta versión no borra nada.
+7. **La lista de sesiones anteriores es la de este móvil.** Las carpetas de Drive siguen ahí aunque cambies de móvil o borres los datos de Safari.
+8. **La integración con Claude** llega en la fase siguiente.
 
-## Estructura de archivos
+## Archivos
 
 ```
-index.html        pantallas (inicio, sesión, galería, resumen)
-app.css           estilos móviles, uso con una mano
-config.js         ← tu CLIENT_ID y correos autorizados
-app.js            interfaz y navegación
-session.js        sesión: inicio, fotos, interrupciones, reanudación, fin
-capture.js        cámara + micrófono, fotos, miniaturas, medidor de nivel
-audio.js          grabación continua por segmentos
-sync.js           subida a Drive, reintentos, comprobación final
-drive.js          llamadas a la API de Drive (sin duplicados)
-auth.js           inicio de sesión de Google (drive.file)
-manifest.js       manifest.json y resumen_sesion.txt
-store.js          estado de sesiones
-db.js             almacenamiento local (IndexedDB)
-util.js           reloj de sesión y formatos
+index.html     pantallas (inicio, sesión, galería, resumen)
+app.css        estilos
+bundle.js      ← lo que carga la página: todos los módulos unidos en un archivo (generado)
+config.js      Client ID, correos autorizados y parámetros
+app.js         interfaz y navegación
+session.js     sesión: inicio, fotos, interrupciones, reanudación, fin
+capture.js     cámara + micrófono, fotos, zoom, miniaturas, medidor de nivel
+audio.js       grabación continua por segmentos
+sync.js        subida a Drive, reintentos, comprobación final, eliminación manual
+drive.js       llamadas a la API de Drive (sin duplicados)
+auth.js        inicio de sesión de Google (drive.file)
+manifest.js    manifest.json y resumen_sesion.txt
+store.js       estado de sesiones y fotos
+db.js          almacenamiento local (IndexedDB)
+util.js        reloj de sesión, formatos, medición de audio
 ```
+
+## Cambiar el código
+
+La página carga `bundle.js`, que se genera a partir de los módulos (así el iPhone nunca mezcla archivos de versiones distintas):
+
+```
+npm install esbuild
+npx esbuild app.js --bundle --format=esm --target=safari15 --charset=utf8 --outfile=bundle.js
+```
+
+Al publicar una versión nueva, sube el número en `config.js` (`APP_VERSION`) y en las dos referencias `?v=` de `index.html`. La versión se ve bajo el título de la app.

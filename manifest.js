@@ -6,24 +6,31 @@
 import { CONFIG } from './config.js';
 import { isoLocal, fmtDuration, fmtDateTime } from './util.js';
 
+/** Segmentos de audio que deberían tener archivo completo en Drive y aún no lo tienen */
+export const pendingAudioSegments = s => s.segments.filter(g => g.endMs != null && !g.full?.empty && !g.full?.driveId);
+
 export function buildManifest(s, photos) {
   const valid = photos.filter(p => p.status !== 'deleted');
   const deleted = photos.filter(p => p.status === 'deleted');
-  const endEpoch = s.endEpoch || (s.startEpoch + (s.heartbeatMs || 0));
-  const photoOut = p => ({
-    photo_id: p.id,
-    seq: p.seq,
-    file_name: p.fileName,
-    drive_path: `${CONFIG.ROOT_FOLDER_NAME}/${s.folderName}/FOTOS/${p.status === 'deleted' ? '_ELIMINADAS/' : ''}${p.fileName}`,
-    drive_file_id: p.driveId || null,
-    elapsed_ms: p.elapsedMs,
-    captured_at: isoLocal(p.epoch),
-    captured_epoch_ms: p.epoch,
-    width: p.width, height: p.height, bytes: p.size, mime_type: p.mime,
-    capture_method: p.method,
-    status: p.status === 'deleted' ? 'eliminada' : (p.driveId ? 'guardada_en_drive' : 'pendiente_de_subir'),
-    ...(p.status === 'deleted' ? { deleted_at: isoLocal(p.deletedAt) } : {}),
-  });
+  const lastKnown = s.startEpoch + Math.max(s.heartbeatMs || 0, ...s.segments.map(g => g.endMs || 0));
+  const base = `${CONFIG.ROOT_FOLDER_NAME}/${s.folderName}`;
+  const photoOut = p => {
+    const isDel = p.status === 'deleted';
+    return {
+      photo_id: p.id,
+      seq: p.seq,
+      file_name: p.fileName,
+      drive_path: p.driveId ? `${base}/FOTOS/${isDel ? '_ELIMINADAS/' : ''}${p.fileName}` : null,
+      drive_file_id: p.driveId || null,
+      elapsed_ms: p.elapsedMs,
+      captured_at: isoLocal(p.epoch),
+      captured_epoch_ms: p.epoch,
+      width: p.width, height: p.height, bytes: p.size, mime_type: p.mime,
+      capture_method: p.method,
+      status: isDel ? 'eliminada' : (p.driveId ? 'guardada_en_drive' : 'pendiente_de_subir'),
+      ...(isDel ? { deleted_at: isoLocal(p.deletedAt), was_uploaded: !!p.driveId } : {}),
+    };
+  };
 
   const segments = s.segments.map(g => ({
     segment: g.seg,
@@ -33,24 +40,25 @@ export function buildManifest(s, photos) {
     start_at: isoLocal(s.startEpoch + g.startMs),
     end_at: g.endMs != null ? isoLocal(s.startEpoch + g.endMs) : null,
     duration_ms: g.endMs != null ? g.endMs - g.startMs : null,
+    measured_audio_duration_ms: g.measuredMs ?? null,
     end_reason: g.endReason || 'grabando',
     chunks_recorded: g.chunkCount,
-    full_file: g.full ? {
+    full_file: g.full?.empty ? { status: 'sin_datos' } : g.full ? {
       file_name: g.full.fileName,
-      drive_path: `${CONFIG.ROOT_FOLDER_NAME}/${s.folderName}/AUDIO/${g.full.fileName}`,
+      drive_path: `${base}/AUDIO/${g.full.fileName}`,
       drive_file_id: g.full.driveId || null, bytes: g.full.size || null,
       status: g.full.driveId ? 'guardado_en_drive' : 'pendiente',
     } : { status: g.endMs != null ? 'pendiente' : 'se_genera_al_terminar' },
     parts: (g.parts || []).map(pt => ({
       part: pt.part + 1, file_name: pt.fileName,
-      drive_path: `${CONFIG.ROOT_FOLDER_NAME}/${s.folderName}/AUDIO/fragmentos/${pt.fileName}`,
+      drive_path: `${base}/AUDIO/fragmentos/${pt.fileName}`,
       drive_file_id: pt.driveId || null,
       start_elapsed_ms: pt.startMs, end_elapsed_ms: pt.endMs, bytes: pt.size,
     })),
   }));
 
   const pendingPhotos = valid.filter(p => !p.driveId).length;
-  const pendingAudio = s.segments.filter(g => g.endMs != null && !g.full?.driveId).length;
+  const pendingAudio = pendingAudioSegments(s).length;
 
   return {
     schema: 'vinted-workflow/manifest@1',
@@ -58,7 +66,7 @@ export function buildManifest(s, photos) {
     generated_at: isoLocal(Date.now()),
     session: {
       session_id: s.id,
-      folder: `${CONFIG.ROOT_FOLDER_NAME}/${s.folderName}`,
+      folder: base,
       status: s.status === 'finished' ? 'terminada' : s.status === 'finishing' ? 'guardando' : 'en_curso_o_interrumpida',
       start_at: isoLocal(s.startEpoch),
       start_epoch_ms: s.startEpoch,
@@ -66,19 +74,21 @@ export function buildManifest(s, photos) {
       end_epoch_ms: s.endEpoch || null,
       timezone: s.timezone,
       utc_offset_minutes: s.utcOffsetMin,
-      duration_ms: s.endEpoch ? s.endEpoch - s.startEpoch : endEpoch - s.startEpoch,
+      duration_ms: (s.endEpoch || lastKnown) - s.startEpoch,
+      google_account: s.accountEmail || null,
     },
     timeline_notes: [
-      'elapsed_ms = milisegundos desde el inicio de la sesión (reloj monotónico del navegador; se re-ancla con la hora del sistema solo si la página se recargó).',
-      'Para situar un instante dentro de un archivo de audio: posición_en_archivo_ms = elapsed_ms - start_elapsed_ms del segmento.',
+      'elapsed_ms = milisegundos desde el inicio de la sesión (reloj monotónico del navegador).',
+      'Para situar un instante dentro de un archivo de audio: posición_en_archivo_ms = elapsed_ms - start_elapsed_ms del segmento que lo contiene.',
       'Los fragmentos (parts) de un segmento, unidos en orden byte a byte, forman exactamente el archivo completo del segmento.',
       'Entre segmentos puede haber huecos sin audio (ver audio.gaps). Precisión esperada de las marcas: ±0,5 s.',
+      'measured_audio_duration_ms es la duración real del archivo medida al cerrar la sesión; si difiere de duration_ms en más de unos segundos, las marcas de ese segmento son menos fiables hacia el final.',
     ],
     photos: valid.map(photoOut),
     deleted_photos: deleted.map(photoOut),
     audio: {
       segments,
-      gaps: s.gaps.map(g => ({ from_elapsed_ms: g.fromMs, to_elapsed_ms: g.toMs, duration_ms: g.toMs - g.fromMs, reason: g.reason })),
+      gaps: s.gaps.map(g => ({ from_elapsed_ms: g.fromMs, to_elapsed_ms: g.toMs, duration_ms: Math.max(0, g.toMs - g.fromMs), reason: g.reason })),
     },
     storage: {
       all_saved: pendingPhotos === 0 && pendingAudio === 0 && s.status === 'finished',
@@ -96,7 +106,7 @@ export function buildSummaryText(s, photos) {
   const deleted = photos.filter(p => p.status === 'deleted');
   const dur = (s.endEpoch || Date.now()) - s.startEpoch;
   const audioMs = s.segments.reduce((a, g) => a + ((g.endMs ?? g.startMs) - g.startMs), 0);
-  const gapMs = s.gaps.reduce((a, g) => a + (g.toMs - g.fromMs), 0);
+  const gapMs = s.gaps.reduce((a, g) => a + Math.max(0, g.toMs - g.fromMs), 0);
   const lines = [
     'VINTED WORKFLOW — RESUMEN DE SESIÓN',
     '====================================',
@@ -108,7 +118,7 @@ export function buildSummaryText(s, photos) {
     `Fotos válidas: ${valid.length}`,
     `Fotos eliminadas: ${deleted.length}`,
     `Audio grabado: ${fmtDuration(audioMs)} en ${s.segments.length} segmento(s)`,
-    `Huecos sin audio: ${s.gaps.length} (${fmtDuration(gapMs)})`,
+    `Cortes de audio: ${s.gaps.length} (${fmtDuration(gapMs)} sin grabar)`,
     `Estado: ${s.verified ? 'Todo guardado y comprobado en Drive' : 'Pendiente de comprobar'}`,
     '',
     'LÍNEA TEMPORAL',
