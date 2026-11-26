@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<!-- Seguridad: solo se permite código propio y los servicios oficiales de Google -->
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'self';
+  script-src 'self' https://accounts.google.com/gsi/client;
+  style-src 'self' https://accounts.google.com/gsi/style;
+  connect-src 'self' https://www.googleapis.com https://accounts.google.com/gsi/ https://oauth2.googleapis.com;
+  frame-src https://accounts.google.com/gsi/;
+  img-src 'self' blob: data:;
+  media-src 'self' blob:;
+  object-src 'none';
+  base-uri 'none';
+  form-action 'none'">
+<meta name="theme-color" content="#111418">
+<title>Vinted Workflow</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<!-- ================= PANTALLA INICIAL ================= -->
+<section id="screen-home" class="screen active">
+  <header class="home-header">
+    <h1>Vinted Workflow</h1>
+    <p class="muted" id="app-version"></p>
+  </header>
+
+  <div class="card" id="auth-card">
+    <div class="row">
+      <div>
+        <div class="label">Google Drive</div>
+        <div id="auth-status" class="value">Sin conectar</div>
+      </div>
+      <button id="btn-login" class="btn secondary">Entrar con Google</button>
+    </div>
+  </div>
+
+  <div class="card warn hidden" id="resume-card">
+    <div class="label">Sesión sin terminar</div>
+    <div id="resume-info" class="value"></div>
+    <div class="btn-row">
+      <button id="btn-resume" class="btn primary">REANUDAR</button>
+      <button id="btn-finish-old" class="btn secondary">TERMINAR Y GUARDAR</button>
+    </div>
+  </div>
+
+  <button id="btn-start" class="btn huge primary" disabled>EMPEZAR SESIÓN</button>
+  <p class="hint" id="start-hint">Entra con Google para empezar.</p>
+
+  <div class="card" id="sync-card">
+    <div class="label">Sincronización</div>
+    <div id="home-sync" class="value">—</div>
+  </div>
+
+  <div class="card">
+    <div class="label">Sesiones anteriores</div>
+    <ul id="session-list" class="session-list"><li class="muted">Ninguna todavía.</li></ul>
+  </div>
+
+  <details class="card small">
+    <summary>Ajustes de prueba</summary>
+    <label class="opt"><input type="radio" name="photomode" value="auto" checked> Fotos: automático (máxima calidad si el iPhone lo permite)</label>
+    <label class="opt"><input type="radio" name="photomode" value="frame"> Fotos: fotograma de la vista previa (más compatible)</label>
+    <p class="muted" id="caps-info"></p>
+  </details>
+</section>
+
+<!-- ================= SESIÓN ACTIVA ================= -->
+<section id="screen-session" class="screen">
+  <video id="preview" playsinline autoplay muted></video>
+  <div class="flash" id="flash"></div>
+
+  <div class="topbar">
+    <div class="pill rec"><span class="dot"></span><span id="timer">00:00:00</span></div>
+    <div class="pill" id="mic-pill"><span class="mic-icon">🎙</span><span class="meter"><span id="meter-bar"></span></span></div>
+    <div class="pill" id="sync-pill">☁︎ <span id="sync-count">0</span></div>
+  </div>
+
+  <div class="banner hidden" id="banner"></div>
+
+  <div class="bottombar">
+    <button id="btn-gallery" class="thumb-btn" aria-label="Galería">
+      <img id="last-thumb" alt="">
+      <span class="badge" id="photo-count">0</span>
+    </button>
+    <button id="btn-photo" class="shutter" aria-label="Hacer foto"><span>HACER FOTO</span></button>
+    <button id="btn-end" class="btn danger end-btn">TERMINAR<br>SESIÓN</button>
+  </div>
+
+  <!-- Capa de recuperación -->
+  <div class="overlay hidden" id="recover-overlay">
+    <div class="overlay-box">
+      <h2>Grabación interrumpida</h2>
+      <p id="recover-msg">iOS ha pausado la cámara o el micrófono.</p>
+      <button id="btn-recover" class="btn huge primary">REANUDAR GRABACIÓN</button>
+      <p class="muted small">Todo lo grabado hasta ahora está guardado en el móvil.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= GALERÍA ================= -->
+<section id="screen-gallery" class="screen">
+  <header class="gal-header">
+    <button id="btn-gal-back" class="btn secondary">← Volver</button>
+    <span id="gal-title">Fotos</span>
+  </header>
+  <p class="muted small center">El audio sigue grabando mientras miras la galería.</p>
+  <div id="gallery-grid" class="grid"></div>
+  <div class="viewer hidden" id="viewer">
+    <img id="viewer-img" alt="">
+    <div class="viewer-info" id="viewer-info"></div>
+    <div class="btn-row">
+      <button id="btn-viewer-close" class="btn secondary">Cerrar</button>
+      <button id="btn-viewer-delete" class="btn danger">Eliminar foto</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= FINALIZACIÓN ================= -->
+<section id="screen-summary" class="screen">
+  <header class="home-header"><h1 id="sum-title">Guardando sesión…</h1></header>
+  <div class="card">
+    <dl class="kv" id="sum-kv"></dl>
+  </div>
+  <div class="card">
+    <div class="label">Comprobaciones</div>
+    <ul id="sum-checks" class="checks"></ul>
+  </div>
+  <div class="btn-row">
+    <button id="btn-sum-retry" class="btn secondary hidden">Reintentar subida</button>
+    <a id="btn-sum-drive" class="btn primary hidden" target="_blank" rel="noopener">Abrir carpeta en Drive</a>
+  </div>
+  <details class="card small">
+    <summary>Diagnóstico (incidencias)</summary>
+    <pre id="sum-incidents"></pre>
+  </details>
+  <button id="btn-sum-home" class="btn secondary wide">Volver al inicio</button>
+</section>
+
+<!-- ================= DIÁLOGO ================= -->
+<div class="overlay hidden" id="dialog">
+  <div class="overlay-box">
+    <p id="dialog-msg"></p>
+    <div class="btn-row">
+      <button id="dialog-cancel" class="btn secondary">Cancelar</button>
+      <button id="dialog-ok" class="btn danger">Aceptar</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://accounts.google.com/gsi/client" async></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
