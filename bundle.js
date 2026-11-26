@@ -2,7 +2,7 @@
 
 // ../vinted-workflow/config.js
 var CONFIG = {
-  APP_VERSION: "0.3.0",
+  APP_VERSION: "0.3.1",
   // ID de cliente OAuth (tipo "Aplicación web") del proyecto de Google Cloud "vinted-workflow".
   CLIENT_ID: "34737536696-u8js6hqusljsbs5v5b4i424b3ejuhto2.apps.googleusercontent.com",
   // Correos autorizados. Si entras con otra cuenta, la app se niega a trabajar
@@ -2822,7 +2822,7 @@ Entra con ${CONFIG.ALLOWED_EMAILS.join(" o ")}.`);
 function renderAuth() {
   const ok = auth.isValid();
   const mins = auth.minutesLeft();
-  $("auth-status").textContent = ok ? `${auth.email || "Conectado"} · acceso válido ${mins} min` : auth.email ? `${auth.email} · acceso caducado` : auth.ready ? "Sin conectar" : "Cargando Google…";
+  $("auth-status").textContent = ok ? `${auth.email || "Conectado"} · conectado ✓${mins < 10 ? ` (pulsa Renovar: quedan ${mins} min)` : ""}` : auth.email ? `${auth.email} · acceso caducado` : auth.ready ? "Sin conectar" : "Cargando Google…";
   $("btn-login").textContent = ok ? "Renovar" : "Entrar con Google";
   $("btn-login").disabled = !auth.ready;
   show($("btn-logout"), ok || !!auth.email);
@@ -2890,7 +2890,7 @@ async function renderHome() {
   const da = draft ? draft.segments.filter((g) => g.endMs != null).length : 0;
   const hasDraft = !!draft && (dn > 0 || da > 0);
   $("btn-prenda").textContent = hasDraft ? "CONTINUAR PRENDA" : "NUEVA PRENDA";
-  $("prenda-hint").textContent = hasDraft ? `Tienes una prenda a medias: ${dn} foto(s) y ${da} audio(s).` : auth.isValid() ? "Haz las fotos con la cámara del iPhone, elígelas aquí y graba el audio." : "Puedes preparar prendas ya; se subirán a Drive cuando entres con Google.";
+  $("prenda-hint").textContent = hasDraft ? `Tienes una prenda a medias: ${dn} foto(s) y ${da} audio(s).` : auth.isValid() ? "Haz las fotos con la cámara del iPhone desde aquí y graba el audio." : "Puedes preparar prendas ya; se subirán a Drive cuando entres con Google.";
   const list = $("session-list");
   const frag = document.createDocumentFragment();
   for (const { s, photos, thumb } of data) {
@@ -3238,7 +3238,7 @@ async function renderPrenda() {
     };
     grid.appendChild(fig);
   });
-  $("btn-pick").textContent = importing ? "Añadiendo fotos…" : photos.length ? "AÑADIR MÁS FOTOS" : "ELEGIR FOTOS";
+  $("btn-pick").textContent = importing ? "Guardando foto…" : photos.length ? "📷 HACER OTRA FOTO" : "📷 HACER FOTO";
   show($("pick-hint"), photos.length === 0);
   const list = $("audio-list");
   list.innerHTML = "";
@@ -3275,7 +3275,7 @@ async function onPickFiles(e) {
   $("btn-save").disabled = true;
   try {
     const r = await prenda.addFiles(files, (i, n) => {
-      $("btn-pick").textContent = `Añadiendo foto ${i} de ${n}…`;
+      $("btn-pick").textContent = n > 1 ? `Añadiendo foto ${i} de ${n}…` : "Guardando foto…";
     });
     if (r.skipped) toast(`${r.skipped} archivo(s) no se han podido añadir (solo se admiten fotos).`);
   } catch (err) {
@@ -3370,6 +3370,7 @@ async function main() {
   $("btn-prenda").onclick = openPrenda;
   $("btn-prenda-back").onclick = leavePrenda;
   $("file-input").onchange = onPickFiles;
+  $("camera-input").onchange = onPickFiles;
   $("btn-rec").onclick = onRecTap;
   $("btn-save").onclick = savePrenda;
   $("btn-discard").onclick = discardPrenda;

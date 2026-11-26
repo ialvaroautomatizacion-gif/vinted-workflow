@@ -145,7 +145,7 @@ async function login({ switchAccount = false } = {}) {
 function renderAuth() {
   const ok = auth.isValid();
   const mins = auth.minutesLeft();
-  $('auth-status').textContent = ok ? `${auth.email || 'Conectado'} · acceso válido ${mins} min`
+  $('auth-status').textContent = ok ? `${auth.email || 'Conectado'} · conectado ✓${mins < 10 ? ` (pulsa Renovar: quedan ${mins} min)` : ''}`
     : auth.email ? `${auth.email} · acceso caducado` : (auth.ready ? 'Sin conectar' : 'Cargando Google…');
   $('btn-login').textContent = ok ? 'Renovar' : 'Entrar con Google';
   $('btn-login').disabled = !auth.ready;
@@ -219,7 +219,7 @@ async function renderHome() {
   const hasDraft = !!draft && (dn > 0 || da > 0);
   $('btn-prenda').textContent = hasDraft ? 'CONTINUAR PRENDA' : 'NUEVA PRENDA';
   $('prenda-hint').textContent = hasDraft ? `Tienes una prenda a medias: ${dn} foto(s) y ${da} audio(s).`
-    : auth.isValid() ? 'Haz las fotos con la cámara del iPhone, elígelas aquí y graba el audio.'
+    : auth.isValid() ? 'Haz las fotos con la cámara del iPhone desde aquí y graba el audio.'
     : 'Puedes preparar prendas ya; se subirán a Drive cuando entres con Google.';
 
   const list = $('session-list');
@@ -554,7 +554,7 @@ async function renderPrenda() {
     fig.querySelector('.rm').onclick = async () => { await prenda.removePhoto(p.id); };
     grid.appendChild(fig);
   });
-  $('btn-pick').textContent = importing ? 'Añadiendo fotos…' : photos.length ? 'AÑADIR MÁS FOTOS' : 'ELEGIR FOTOS';
+  $('btn-pick').textContent = importing ? 'Guardando foto…' : photos.length ? '📷 HACER OTRA FOTO' : '📷 HACER FOTO';
   show($('pick-hint'), photos.length === 0);
 
   const list = $('audio-list');
@@ -592,7 +592,7 @@ async function onPickFiles(e) {
   importing = true;
   $('btn-save').disabled = true;
   try {
-    const r = await prenda.addFiles(files, (i, n) => { $('btn-pick').textContent = `Añadiendo foto ${i} de ${n}…`; });
+    const r = await prenda.addFiles(files, (i, n) => { $('btn-pick').textContent = n > 1 ? `Añadiendo foto ${i} de ${n}…` : 'Guardando foto…'; });
     if (r.skipped) toast(`${r.skipped} archivo(s) no se han podido añadir (solo se admiten fotos).`);
   } catch (err) { toast('No se pudieron añadir las fotos: ' + (err?.message || err)); }
   finally { importing = false; renderPrenda(); }
@@ -684,6 +684,7 @@ async function main() {
   $('btn-prenda').onclick = openPrenda;
   $('btn-prenda-back').onclick = leavePrenda;
   $('file-input').onchange = onPickFiles;
+  $('camera-input').onchange = onPickFiles;
   $('btn-rec').onclick = onRecTap;
   $('btn-save').onclick = savePrenda;
   $('btn-discard').onclick = discardPrenda;

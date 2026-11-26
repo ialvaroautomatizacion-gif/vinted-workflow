@@ -1,4 +1,4 @@
-# Vinted Workflow — versión 0.3.0
+# Vinted Workflow — versión 0.3.1
 
 Aplicación web para iPhone (Safari) que guarda en tu Google Drive las fotos y el audio de cada prenda, **una carpeta por prenda**.
 
@@ -6,8 +6,8 @@ Aplicación web para iPhone (Safari) que guarda en tu Google Drive las fotos y e
 
 ## Uso normal: una prenda en tres pasos
 
-1. **Haz las fotos con la cámara del iPhone**, como siempre (calidad nativa).
-2. Abre la app → **NUEVA PRENDA** → **ELEGIR FOTOS** → *Fototeca* → marca las de esa prenda.
+1. Abre la app → **NUEVA PRENDA**.
+2. **HACER FOTO**: se abre la cámara del iPhone (calidad nativa). Haz la foto → *Usar foto*. Repite con **HACER OTRA FOTO**. (También puedes elegir fotos ya hechas de la fototeca.)
 3. **GRABAR AUDIO**: cuenta marca, talla, medidas, estado e instrucciones. Pulsa **PARAR**. Puedes escucharlo, borrarlo o grabar otro.
 4. **GUARDAR PRENDA** → **SIGUIENTE PRENDA**.
 

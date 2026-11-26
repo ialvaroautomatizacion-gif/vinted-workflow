@@ -4,7 +4,7 @@
  * y solo para las cuentas añadidas como usuarios de prueba en Google Cloud.
  */
 export const CONFIG = {
-  APP_VERSION: '0.3.0',
+  APP_VERSION: '0.3.1',
 
   // ID de cliente OAuth (tipo "Aplicación web") del proyecto de Google Cloud "vinted-workflow".
   CLIENT_ID: '34737536696-u8js6hqusljsbs5v5b4i424b3ejuhto2.apps.googleusercontent.com',

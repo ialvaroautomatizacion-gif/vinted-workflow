@@ -20,7 +20,7 @@
   form-action 'none'">
 <meta name="theme-color" content="#111418">
 <title>Vinted Workflow</title>
-<link rel="stylesheet" href="app.css?v=0.3.0">
+<link rel="stylesheet" href="app.css?v=0.3.1">
 </head>
 <body>
 
@@ -139,9 +139,11 @@
   <div class="card">
     <div class="label">1 · Fotos <span id="prenda-photo-count"></span></div>
     <div id="prenda-grid" class="grid four"></div>
-    <label for="file-input" class="btn huge secondary" id="btn-pick">ELEGIR FOTOS</label>
+    <label for="camera-input" class="btn huge secondary" id="btn-pick">📷 HACER FOTO</label>
+    <input type="file" id="camera-input" class="visually-hidden" accept="image/*" capture="environment">
     <input type="file" id="file-input" class="visually-hidden" accept="image/*" multiple>
-    <p class="muted small center" id="pick-hint">Haz las fotos con la cámara del iPhone. Luego pulsa aquí, elige «Fototeca» y marca las de esta prenda.</p>
+    <p class="muted small center" id="pick-hint">Se abre la cámara del iPhone. Haz la foto y pulsa «Usar foto».</p>
+    <p class="center"><label for="file-input" class="link-btn" id="btn-library">o elegir fotos ya hechas de la fototeca</label></p>
   </div>
 
   <div class="card">
@@ -208,6 +210,6 @@
 </div>
 
 <script src="https://accounts.google.com/gsi/client" async></script>
-<script type="module" src="bundle.js?v=0.3.0"></script>
+<script type="module" src="bundle.js?v=0.3.1"></script>
 </body>
 </html>
