@@ -11,12 +11,14 @@ import { loadSessions, photosOf, thumbOf, validPhotos, addIncident, saveSession 
 import { sync } from './sync.js';
 import { SessionController, finishOrphan } from './session.js';
 import { PrendaController, currentDraft, TIPOS } from './prenda.js';
+import { team, loadPicker, pickSharedFolder, confirmSharedFolder } from './team.js';
 import { fmtDuration, fmtDateTime, fmtBytes, escapeHtml, settings } from './util.js';
 
 const $ = id => document.getElementById(id);
 const show = (el, on = true) => el.classList.toggle('hidden', !on);
 
 let controller;
+let teamSetupNeeded = false;
 let prenda;
 let prendaSeq = 0;
 let importing = false;
@@ -151,6 +153,8 @@ async function login({ switchAccount = false } = {}) {
     }
     auth.setEmail(user.emailAddress);
     pauseNoticeShown = false;
+    await refreshTeam();
+    if (teamSetupNeeded) await offerTeamSetup();
     sync.resetBackoff();
     sync.kick();
     return true;
@@ -174,11 +178,44 @@ function renderAuth() {
   renderDriveAlert();
 }
 
+// ---------------- Equipo: carpeta compartida ----------------
+async function refreshTeam() {
+  teamSetupNeeded = await team.needsSetup();
+  if (auth.isValid() && auth.email && !team.isOwner()) loadPicker().catch(() => {});
+  renderDriveAlert();
+}
+
+/** Pregunta y abre el selector de carpeta compartida. Devuelve true si queda conectada. */
+async function offerTeamSetup() {
+  const ok = await dialog({
+    msg: `Tus prendas se guardan en la carpeta del equipo (${CONFIG.ROOT_FOLDER_NAME} de ${CONFIG.OWNER_EMAIL}), dentro de tu subcarpeta «${team.userDir()}».\n\nSolo hay que elegirla una vez: en la siguiente pantalla toca la carpeta ${CONFIG.ROOT_FOLDER_NAME} y pulsa «Seleccionar».`,
+    okText: 'Elegir carpeta', cancelText: 'Más tarde',
+  });
+  return ok ? runTeamSetup() : false;
+}
+
+async function runTeamSetup() {
+  try {
+    const picked = await pickSharedFolder();
+    if (!picked) return false;
+    await confirmSharedFolder(picked);
+    await refreshTeam();
+    sync.resetBackoff(); sync.kick();
+    toast(`Conectado a la carpeta del equipo. Tus prendas irán a ${CONFIG.ROOT_FOLDER_NAME}/${team.userDir()}.`, 6000);
+    if (currentScreen === 'home') renderHome();
+    return true;
+  } catch (e) {
+    await info('No se pudo conectar con la carpeta del equipo.\n\n' + (e?.message || e) + `\n\nComprueba que ${CONFIG.OWNER_EMAIL} te ha compartido la carpeta como editor.`);
+    return false;
+  }
+}
+
 /** Aviso rojo fijo cuando Drive no está conectado: lo capturado se queda solo en el móvil. */
 function renderDriveAlert() {
-  const ok = auth.isValid();
+  const ok = auth.isValid() && !teamSetupNeeded;
   const pending = sync.status.pendingPhotos + sync.status.pendingAudio;
   const txt = !auth.ready ? 'Cargando Google…'
+    : auth.isValid() && teamSetupNeeded ? `⚠️ Falta conectar con la carpeta del equipo${pending ? ` (${pending} archivo(s) sin subir)` : ''}\nToca aquí para elegirla`
     : pending ? `⚠️ ${pending} archivo(s) SIN SUBIR a Drive\nToca aquí para conectar Google Drive`
     : '⚠️ Google Drive NO está conectado\nToca aquí para conectar';
   document.querySelectorAll('.drive-alert').forEach(b => { b.textContent = txt; b.disabled = !auth.ready; show(b, !ok); });
@@ -534,23 +571,23 @@ async function openSummary(s, { auto = false } = {}) {
   if (my !== summaryRun) return;
   summaryState.report = report;
 
-  const icon = c => c.warn ? '⚠️' : c.ok ? '✅' : (report.needsLogin || report.offline) ? '⏳' : '❌';
+  const icon = c => c.warn ? '⚠️' : c.ok ? '✅' : (report.needsLogin || report.needsTeam || report.offline) ? '⏳' : '❌';
   $('sum-checks').innerHTML = report.checks.map(c =>
     `<li>${icon(c)} ${escapeHtml(c.label)}${c.detail ? `<div class="muted small">${escapeHtml(c.detail)}</div>` : ''}</li>`).join('');
   const G = isPrenda ? 'Prenda guardada' : 'Sesión guardada';
   $('sum-title').textContent = report.ok ? (report.lossy ? `${G} con incidencias` : G)
-    : report.needsLogin ? 'Falta subir a Drive' : report.offline ? 'Esperando conexión' : 'Faltan archivos por guardar';
+    : report.needsLogin || report.needsTeam ? 'Falta subir a Drive' : report.offline ? 'Esperando conexión' : 'Faltan archivos por guardar';
   $('sum-progress').textContent = report.ok ? 'Todo está en tu Google Drive y comprobado.'
     : isPrenda ? 'No se ha perdido nada: sigue guardada en la app y se subirá en cuanto se pueda. Puedes continuar con la siguiente.'
     : 'No se ha perdido nada: lo pendiente sigue guardado en este móvil.';
-  $('btn-sum-retry').textContent = report.needsLogin ? 'Conectar con Google y subir' : 'Reintentar ahora';
+  $('btn-sum-retry').textContent = report.needsTeam ? 'Elegir carpeta del equipo y subir' : report.needsLogin ? 'Conectar con Google y subir' : 'Reintentar ahora';
   show($('btn-sum-retry'), !report.ok);
   if (s.drive?.folderId) { $('btn-sum-drive').href = drive.folderUrl(s.drive.folderId); show($('btn-sum-drive')); }
   $('sum-incidents').textContent = incidentText(s);
 
   // Reintento automático si el fallo fue de conexión (no si hace falta que el usuario entre con Google)
   clearTimeout(openSummary.timer);
-  if (!report.ok && !report.needsLogin && summaryState.attempts < 6) {
+  if (!report.ok && !report.needsLogin && !report.needsTeam && summaryState.attempts < 6) {
     openSummary.timer = setTimeout(() => {
       if (currentScreen === 'summary' && summaryState?.session === s && my === summaryRun && navigator.onLine) openSummary(s, { auto: true });
     }, 20000);
@@ -560,7 +597,8 @@ async function openSummary(s, { auto = false } = {}) {
 // ---------------- Prenda (modo sencillo) ----------------
 async function openPrenda({ ask = false } = {}) {
   if (controller.s) return;
-  if (ask && !auth.isValid()) {
+  if (ask && auth.isValid() && teamSetupNeeded) await offerTeamSetup();
+  else if (ask && !auth.isValid()) {
     const r = await dialog({
       msg: 'Google Drive NO está conectado.\n\nSi sigues sin conectar, las fotos y el audio se quedan solo en este móvil hasta que conectes.',
       okText: 'Conectar ahora', cancelText: 'Seguir sin conectar', onOk: () => (auth.ready ? login() : false),
@@ -712,7 +750,7 @@ async function main() {
   controller = new SessionController($('preview'), ui);
   prenda = new PrendaController(prendaUi);
 
-  auth.onChange(renderAuth);
+  auth.onChange(() => { renderAuth(); refreshTeam(); });
   sync.onStatus(renderSync);
   setInterval(renderAuth, 30000); // refresca los minutos de acceso
 
@@ -723,7 +761,7 @@ async function main() {
   document.querySelectorAll('.tipo-opt').forEach(b => { b.onclick = () => setTipo(b.dataset.tipo); });
   $('tipo-badge').onclick = () => setTipo((prenda.s?.tipo || getTipo()) === 'resubida' ? 'nueva' : 'resubida');
   renderTipo();
-  document.querySelectorAll('.drive-alert').forEach(b => { b.onclick = () => login().then(() => { if (currentScreen === 'home') renderHome(); }); });
+  document.querySelectorAll('.drive-alert').forEach(b => { b.onclick = () => (auth.isValid() && teamSetupNeeded ? runTeamSetup() : login()).then(() => { if (currentScreen === 'home') renderHome(); }); });
   $('btn-prenda-back').onclick = leavePrenda;
   $('file-input').onchange = onPickFiles;
   $('camera-input').onchange = onPickFiles;
@@ -782,6 +820,7 @@ async function main() {
     const s = summaryState?.session;
     if (!s) return;
     if (!auth.isValid()) { login().then(ok => { if (ok) openSummary(s); }); return; }
+    if (teamSetupNeeded) { runTeamSetup().then(ok => { if (ok) openSummary(s); }); return; }
     openSummary(s);
   };
   $('btn-sum-home').onclick = () => { clearTimeout(openSummary.timer); go('home'); };

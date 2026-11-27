@@ -1,4 +1,4 @@
-# Vinted Workflow — versión 0.6.0
+# Vinted Workflow — versión 0.7.0
 
 Aplicación web para iPhone (Safari) que guarda en tu Google Drive las fotos y el audio de cada prenda, **una carpeta por prenda**.
 
@@ -41,6 +41,24 @@ Lista las fotos (orden, nombre, nombre original, fecha de la foto, tamaño) y lo
 ### Nueva o resubida
 
 En el inicio, encima de EMPEZAR PRENDA, eliges **NUEVA** (la prenda nunca se ha subido: hay que crearla y añadirla a su lote o bala) o **RESUBIDA** (ya existe: hay que buscar el anuncio anterior, eliminarlo y volver a publicarla). La elección se recuerda hasta que la cambies. Dentro de cada prenda se ve en grande y se puede cambiar tocándola. Queda en el nombre de la carpeta (`PRENDA_03_11h32_RESUBIDA`) y en `manifest.json` (`item.tipo`).
+
+## Equipo: otras personas suben a tu carpeta
+
+La carpeta `VINTED_WORKFLOW` de **ialvaroautomatizacion@gmail.com** está compartida como editor con **joseromerotr5@gmail.com** (José).
+
+José abre el mismo enlace en su Safari, entra con **su** cuenta de Google y, la primera vez, la app le pide **Elegir carpeta**: toca `VINTED_WORKFLOW` y *Seleccionar*. Desde entonces sus prendas van a:
+
+```
+VINTED_WORKFLOW/
+  2026-11-27/PRENDA_01_11h32_NUEVA/…          ← las tuyas
+  Jose/2026-11-27/PRENDA_01_11h40_NUEVA/…     ← las de José
+```
+
+La ficha `manifest.json` indica quién la subió (`item.uploaded_by`, `item.google_account`).
+
+Importante: en un Drive normal (Gmail) **el dueño de cada archivo es quien lo sube**. Los archivos de José están en tu carpeta y los ves, pero ocupan su espacio y, si él los borra o cierra su cuenta, desaparecen.
+
+**Añadir a otra persona:** (1) Google Cloud › Google Auth Platform › Público › Usuarios de prueba; (2) compartirle la carpeta `VINTED_WORKFLOW` como editor; (3) añadir su correo en `ALLOWED_EMAILS` y su nombre en `TEAM_NAMES` de `config.js`, y regenerar `bundle.js`.
 
 ## Otro modo: sesión continua
 

@@ -4,14 +4,23 @@
  * y solo para las cuentas añadidas como usuarios de prueba en Google Cloud.
  */
 export const CONFIG = {
-  APP_VERSION: '0.6.0',
+  APP_VERSION: '0.7.0',
 
   // ID de cliente OAuth (tipo "Aplicación web") del proyecto de Google Cloud "vinted-workflow".
   CLIENT_ID: '34737536696-u8js6hqusljsbs5v5b4i424b3ejuhto2.apps.googleusercontent.com',
 
   // Correos autorizados. Si entras con otra cuenta, la app se niega a trabajar
   // (capa extra; la protección real es la de Google: modo Prueba + usuarios de prueba).
-  ALLOWED_EMAILS: ['ialvaroautomatizacion@gmail.com'],
+  ALLOWED_EMAILS: ['ialvaroautomatizacion@gmail.com', 'joseromerotr5@gmail.com'],
+
+  // Equipo: la cuenta dueña de la carpeta VINTED_WORKFLOW. Las demás cuentas suben dentro de ella,
+  // cada una en su subcarpeta (nombre según TEAM_NAMES).
+  OWNER_EMAIL: 'ialvaroautomatizacion@gmail.com',
+  SHARED_ROOT_ID: '1lGhcglhF1pFSaC_vUuBGm7FEtf_HxenH',   // carpeta VINTED_WORKFLOW de la dueña
+  TEAM_NAMES: { 'joseromerotr5@gmail.com': 'Jose' },
+  // Selector de carpetas de Google (solo lo usan los colaboradores). La clave solo funciona desde la web de la app.
+  PICKER_API_KEY: 'AIzaSyB-TOf9XvBU4Urgj5xcAkUFxsuqZ80LLjE',
+  GCP_PROJECT_NUMBER: '34737536696',
 
   // Permiso mínimo: la app solo ve y modifica los archivos que ella misma crea.
   SCOPE: 'https://www.googleapis.com/auth/drive.file',

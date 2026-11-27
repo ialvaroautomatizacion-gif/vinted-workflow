@@ -2,12 +2,21 @@
 
 // ../vinted-workflow/config.js
 var CONFIG = {
-  APP_VERSION: "0.6.0",
+  APP_VERSION: "0.7.0",
   // ID de cliente OAuth (tipo "Aplicación web") del proyecto de Google Cloud "vinted-workflow".
   CLIENT_ID: "34737536696-u8js6hqusljsbs5v5b4i424b3ejuhto2.apps.googleusercontent.com",
   // Correos autorizados. Si entras con otra cuenta, la app se niega a trabajar
   // (capa extra; la protección real es la de Google: modo Prueba + usuarios de prueba).
-  ALLOWED_EMAILS: ["ialvaroautomatizacion@gmail.com"],
+  ALLOWED_EMAILS: ["ialvaroautomatizacion@gmail.com", "joseromerotr5@gmail.com"],
+  // Equipo: la cuenta dueña de la carpeta VINTED_WORKFLOW. Las demás cuentas suben dentro de ella,
+  // cada una en su subcarpeta (nombre según TEAM_NAMES).
+  OWNER_EMAIL: "ialvaroautomatizacion@gmail.com",
+  SHARED_ROOT_ID: "1lGhcglhF1pFSaC_vUuBGm7FEtf_HxenH",
+  // carpeta VINTED_WORKFLOW de la dueña
+  TEAM_NAMES: { "joseromerotr5@gmail.com": "Jose" },
+  // Selector de carpetas de Google (solo lo usan los colaboradores). La clave solo funciona desde la web de la app.
+  PICKER_API_KEY: "AIzaSyB-TOf9XvBU4Urgj5xcAkUFxsuqZ80LLjE",
+  GCP_PROJECT_NUMBER: "34737536696",
   // Permiso mínimo: la app solo ve y modifica los archivos que ella misma crea.
   SCOPE: "https://www.googleapis.com/auth/drive.file",
   ROOT_FOLDER_NAME: "VINTED_WORKFLOW",
@@ -868,6 +877,79 @@ async function thumbOf(photo) {
 }
 var validPhotos = (list) => list.filter((p) => p.status !== "deleted");
 
+// ../vinted-workflow/team.js
+var lc = (s) => (s || "").toLowerCase();
+var team = {
+  /** true si la cuenta conectada es la dueña de la carpeta (o si no hay equipo configurado). */
+  isOwner(email = auth.email) {
+    return !CONFIG.OWNER_EMAIL || lc(email) === lc(CONFIG.OWNER_EMAIL);
+  },
+  /** Nombre de la subcarpeta del colaborador dentro de la carpeta compartida. */
+  userDir(email = auth.email) {
+    const e = lc(email);
+    const named = Object.entries(CONFIG.TEAM_NAMES || {}).find(([k]) => lc(k) === e);
+    return named ? named[1] : (e.split("@")[0] || "colaborador").replace(/[^\w.-]+/g, "_");
+  },
+  key(email = auth.email) {
+    return `sharedRoot:${lc(email)}`;
+  },
+  async sharedRoot(email = auth.email) {
+    return await db.kvGet(team.key(email)) || null;
+  },
+  async setSharedRoot(id, email = auth.email) {
+    await db.kvSet(team.key(email), id);
+  },
+  /** Colaborador conectado que aún no ha elegido la carpeta compartida. */
+  async needsSetup() {
+    if (!auth.isValid() || !auth.email || team.isOwner()) return false;
+    return !await team.sharedRoot();
+  }
+};
+var pickerReady = null;
+function loadPicker() {
+  if (pickerReady) return pickerReady;
+  pickerReady = new Promise((resolve, reject) => {
+    const done = () => window.gapi.load("picker", { callback: () => resolve(true), onerror: () => reject(new Error("No se pudo cargar el selector de Google")) });
+    if (window.gapi?.load) return done();
+    const sc = document.createElement("script");
+    sc.src = "https://apis.google.com/js/api.js";
+    sc.async = true;
+    sc.onload = done;
+    sc.onerror = () => reject(new Error("No se pudo cargar el selector de Google (revisa la conexión)"));
+    document.head.appendChild(sc);
+  });
+  pickerReady.catch(() => {
+    pickerReady = null;
+  });
+  return pickerReady;
+}
+async function pickSharedFolder() {
+  await loadPicker();
+  const P = window.google.picker;
+  return new Promise((resolve) => {
+    const shared = new P.DocsView(P.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true).setMimeTypes("application/vnd.google-apps.folder");
+    if (typeof shared.setOwnedByMe === "function") shared.setOwnedByMe(false);
+    if (CONFIG.SHARED_ROOT_ID && typeof shared.setFileIds === "function") shared.setFileIds(CONFIG.SHARED_ROOT_ID);
+    const builder = new P.PickerBuilder().setAppId(CONFIG.GCP_PROJECT_NUMBER).setDeveloperKey(CONFIG.PICKER_API_KEY).setOAuthToken(auth.token).addView(shared).setTitle("Elige la carpeta VINTED_WORKFLOW compartida").setLocale("es").setCallback((data) => {
+      const action = data[P.Response.ACTION];
+      if (action === P.Action.PICKED) {
+        const doc = data[P.Response.DOCUMENTS]?.[0];
+        resolve(doc ? { id: doc[P.Document.ID], name: doc[P.Document.NAME] } : null);
+      } else if (action === P.Action.CANCEL) resolve(null);
+    });
+    if (P.Feature?.SUPPORT_DRIVES) builder.enableFeature(P.Feature.SUPPORT_DRIVES);
+    builder.build().setVisible(true);
+  });
+}
+async function confirmSharedFolder(picked) {
+  if (CONFIG.SHARED_ROOT_ID && picked.id !== CONFIG.SHARED_ROOT_ID) {
+    throw new Error(`Esa no es la carpeta del equipo. Elige «${CONFIG.ROOT_FOLDER_NAME}» (compartida por ${CONFIG.OWNER_EMAIL}).`);
+  }
+  await drive.ensureFolder(team.userDir(), picked.id, `VW_USER_${lc(auth.email)}`);
+  await team.setSharedRoot(picked.id);
+  return picked.id;
+}
+
 // ../vinted-workflow/util.js
 var SessionClock = class {
   constructor(startEpoch) {
@@ -1011,7 +1093,7 @@ function buildManifest(s, photos) {
   const valid = photos.filter((p) => p.status !== "deleted");
   const deleted = photos.filter((p) => p.status === "deleted");
   const lastKnown = s.startEpoch + Math.max(s.heartbeatMs || 0, ...s.segments.map((g) => g.endMs || 0));
-  const base = `${CONFIG.ROOT_FOLDER_NAME}/${s.folderName}`;
+  const base = `${CONFIG.ROOT_FOLDER_NAME}/${s.userDir ? s.userDir + "/" : ""}${s.folderName}`;
   const photoOut = (p) => {
     const isDel = p.status === "deleted";
     return {
@@ -1140,7 +1222,7 @@ function buildSummaryText(s, photos) {
 function buildPrendaManifest(s, photos) {
   const valid = photos.filter((p) => p.status !== "deleted").sort((a, b) => (a.order || a.seq) - (b.order || b.seq));
   const audios = s.segments.filter((g) => g.endMs != null && !g.full?.empty).sort((a, b) => (a.order || a.seg) - (b.order || b.seg));
-  const base = `${CONFIG.ROOT_FOLDER_NAME}/${s.dayFolder}/${s.folderName}`;
+  const base = `${CONFIG.ROOT_FOLDER_NAME}/${s.userDir ? s.userDir + "/" : ""}${s.dayFolder}/${s.folderName}`;
   return {
     schema: "vinted-workflow/prenda@1",
     app_version: CONFIG.APP_VERSION,
@@ -1156,7 +1238,8 @@ function buildPrendaManifest(s, photos) {
       saved_at: s.endEpoch ? isoLocal(s.endEpoch) : null,
       timezone: s.timezone,
       utc_offset_minutes: s.utcOffsetMin,
-      google_account: s.accountEmail || null
+      google_account: s.accountEmail || null,
+      uploaded_by: s.userDir || "propietario"
     },
     notes: [
       "Todas las fotos y todos los audios de esta carpeta pertenecen a UNA sola prenda.",
@@ -1263,9 +1346,11 @@ var SyncEngine = class {
   blockedReason() {
     if (!navigator.onLine) return "Sin conexión: se subirá al volver la cobertura";
     if (!auth.isValid()) return "Subida a Drive en pausa (acceso caducado). Todo se sigue guardando en el móvil";
+    if (this.needsTeamSetup) return "Falta elegir la carpeta compartida del equipo";
     return null;
   }
   async runOnce() {
+    this.needsTeamSetup = await team.needsSetup();
     await this.computePending();
     this.status.paused = this.blockedReason();
     if (this.status.paused) return this.emit();
@@ -1337,14 +1422,27 @@ var SyncEngine = class {
     const email = (auth.email || "").toLowerCase();
     if (!s.accountEmail && email) s.accountEmail = email;
     const rootKey = `rootFolderId:${email}`;
+    const owner = team.isOwner(email);
+    if (!owner) {
+      const shared = await team.sharedRoot(email);
+      if (!shared) throw new DriveError("Falta elegir la carpeta compartida del equipo", 403);
+      if (d.rootId && d.rootId !== shared) s.drive = { rootId: shared };
+      if (!s.drive.rootId) s.drive.rootId = shared;
+      s.userDir = team.userDir(email);
+    }
     if (forceCheck || !this.foldersChecked.has(s.id)) {
-      if (d.rootId && !await drive.folderAlive(d.rootId)) {
-        d.rootId = null;
+      const dr = s.drive;
+      if (dr.rootId && !await drive.folderAlive(dr.rootId)) {
+        if (!owner) {
+          await team.setSharedRoot(null, email);
+          throw new DriveError("Ya no hay acceso a la carpeta compartida: hay que volver a elegirla", 403);
+        }
+        dr.rootId = null;
         await db.kvSet(rootKey, null);
       }
-      if (d.folderId && !await drive.folderAlive(d.folderId)) {
+      if (dr.folderId && !await drive.folderAlive(dr.folderId)) {
         addIncident(s, null, "carpeta_de_drive_no_encontrada", "se vuelve a crear y se suben de nuevo los archivos");
-        s.drive = { rootId: d.rootId };
+        s.drive = { rootId: dr.rootId };
       }
       this.foldersChecked.add(s.id);
     }
@@ -1357,14 +1455,19 @@ var SyncEngine = class {
         await db.kvSet(rootKey, dd.rootId);
       }
     }
+    let base = dd.rootId;
+    if (!owner) {
+      if (!dd.userId) dd.userId = await drive.ensureFolder(team.userDir(email), dd.rootId, `VW_USER_${email}`);
+      base = dd.userId;
+    }
     if (s.kind === "prenda") {
-      if (!dd.dayId) dd.dayId = await drive.ensureFolder(s.dayFolder, dd.rootId, `VW_DAY_${s.dayFolder}`);
+      if (!dd.dayId) dd.dayId = await drive.ensureFolder(s.dayFolder, base, owner ? `VW_DAY_${s.dayFolder}` : `VW_DAY_${email}_${s.dayFolder}`);
       if (!dd.folderId) dd.folderId = await drive.ensureFolder(s.folderName, dd.dayId, `${s.id}_DIR`);
       dd.fotosId = dd.audioId = dd.folderId;
       await saveSession(s);
       return;
     }
-    if (!dd.folderId) dd.folderId = await drive.ensureFolder(s.folderName, dd.rootId, `${s.id}_DIR`);
+    if (!dd.folderId) dd.folderId = await drive.ensureFolder(s.folderName, base, `${s.id}_DIR`);
     if (!dd.fotosId) dd.fotosId = await drive.ensureFolder("FOTOS", dd.folderId, `${s.id}_FOTOS`);
     if (!dd.audioId) dd.audioId = await drive.ensureFolder("AUDIO", dd.folderId, `${s.id}_AUDIO`);
     if (!dd.partsId) dd.partsId = await drive.ensureFolder("fragmentos", dd.audioId, `${s.id}_PARTS`);
@@ -1535,6 +1638,11 @@ var SyncEngine = class {
     if (!auth.isValid()) {
       report.needsLogin = true;
       add(false, "Hay que volver a conectar con Google", "El acceso dura 1 hora por seguridad. No se ha perdido nada: pulsa el botón para subir lo que falta.");
+      return report;
+    }
+    if (await team.needsSetup()) {
+      report.needsTeam = true;
+      add(false, "Falta conectar con la carpeta del equipo", "Toca el botón de abajo y elige la carpeta VINTED_WORKFLOW compartida. No se ha perdido nada.");
       return report;
     }
     if (this.wrongAccount(s)) {
@@ -2692,6 +2800,7 @@ var PrendaController = class {
 var $ = (id) => document.getElementById(id);
 var show = (el, on = true) => el.classList.toggle("hidden", !on);
 var controller;
+var teamSetupNeeded = false;
 var prenda;
 var prendaSeq = 0;
 var importing = false;
@@ -2845,6 +2954,8 @@ Entra con ${CONFIG.ALLOWED_EMAILS.join(" o ")}.`);
     }
     auth.setEmail(user.emailAddress);
     pauseNoticeShown = false;
+    await refreshTeam();
+    if (teamSetupNeeded) await offerTeamSetup();
     sync.resetBackoff();
     sync.kick();
     return true;
@@ -2865,10 +2976,45 @@ function renderAuth() {
   $("start-hint").textContent = !ok ? "Entra con Google para empezar." : orphan ? "Reanuda o termina primero la sesión pendiente." : "";
   renderDriveAlert();
 }
+async function refreshTeam() {
+  teamSetupNeeded = await team.needsSetup();
+  if (auth.isValid() && auth.email && !team.isOwner()) loadPicker().catch(() => {
+  });
+  renderDriveAlert();
+}
+async function offerTeamSetup() {
+  const ok = await dialog({
+    msg: `Tus prendas se guardan en la carpeta del equipo (${CONFIG.ROOT_FOLDER_NAME} de ${CONFIG.OWNER_EMAIL}), dentro de tu subcarpeta «${team.userDir()}».
+
+Solo hay que elegirla una vez: en la siguiente pantalla toca la carpeta ${CONFIG.ROOT_FOLDER_NAME} y pulsa «Seleccionar».`,
+    okText: "Elegir carpeta",
+    cancelText: "Más tarde"
+  });
+  return ok ? runTeamSetup() : false;
+}
+async function runTeamSetup() {
+  try {
+    const picked = await pickSharedFolder();
+    if (!picked) return false;
+    await confirmSharedFolder(picked);
+    await refreshTeam();
+    sync.resetBackoff();
+    sync.kick();
+    toast(`Conectado a la carpeta del equipo. Tus prendas irán a ${CONFIG.ROOT_FOLDER_NAME}/${team.userDir()}.`, 6e3);
+    if (currentScreen === "home") renderHome();
+    return true;
+  } catch (e) {
+    await info("No se pudo conectar con la carpeta del equipo.\n\n" + (e?.message || e) + `
+
+Comprueba que ${CONFIG.OWNER_EMAIL} te ha compartido la carpeta como editor.`);
+    return false;
+  }
+}
 function renderDriveAlert() {
-  const ok = auth.isValid();
+  const ok = auth.isValid() && !teamSetupNeeded;
   const pending = sync.status.pendingPhotos + sync.status.pendingAudio;
-  const txt = !auth.ready ? "Cargando Google…" : pending ? `⚠️ ${pending} archivo(s) SIN SUBIR a Drive
+  const txt = !auth.ready ? "Cargando Google…" : auth.isValid() && teamSetupNeeded ? `⚠️ Falta conectar con la carpeta del equipo${pending ? ` (${pending} archivo(s) sin subir)` : ""}
+Toca aquí para elegirla` : pending ? `⚠️ ${pending} archivo(s) SIN SUBIR a Drive
 Toca aquí para conectar Google Drive` : "⚠️ Google Drive NO está conectado\nToca aquí para conectar";
   document.querySelectorAll(".drive-alert").forEach((b) => {
     b.textContent = txt;
@@ -3236,12 +3382,12 @@ async function openSummary(s, { auto = false } = {}) {
   }
   if (my !== summaryRun) return;
   summaryState.report = report;
-  const icon = (c) => c.warn ? "⚠️" : c.ok ? "✅" : report.needsLogin || report.offline ? "⏳" : "❌";
+  const icon = (c) => c.warn ? "⚠️" : c.ok ? "✅" : report.needsLogin || report.needsTeam || report.offline ? "⏳" : "❌";
   $("sum-checks").innerHTML = report.checks.map((c) => `<li>${icon(c)} ${escapeHtml(c.label)}${c.detail ? `<div class="muted small">${escapeHtml(c.detail)}</div>` : ""}</li>`).join("");
   const G = isPrenda ? "Prenda guardada" : "Sesión guardada";
-  $("sum-title").textContent = report.ok ? report.lossy ? `${G} con incidencias` : G : report.needsLogin ? "Falta subir a Drive" : report.offline ? "Esperando conexión" : "Faltan archivos por guardar";
+  $("sum-title").textContent = report.ok ? report.lossy ? `${G} con incidencias` : G : report.needsLogin || report.needsTeam ? "Falta subir a Drive" : report.offline ? "Esperando conexión" : "Faltan archivos por guardar";
   $("sum-progress").textContent = report.ok ? "Todo está en tu Google Drive y comprobado." : isPrenda ? "No se ha perdido nada: sigue guardada en la app y se subirá en cuanto se pueda. Puedes continuar con la siguiente." : "No se ha perdido nada: lo pendiente sigue guardado en este móvil.";
-  $("btn-sum-retry").textContent = report.needsLogin ? "Conectar con Google y subir" : "Reintentar ahora";
+  $("btn-sum-retry").textContent = report.needsTeam ? "Elegir carpeta del equipo y subir" : report.needsLogin ? "Conectar con Google y subir" : "Reintentar ahora";
   show($("btn-sum-retry"), !report.ok);
   if (s.drive?.folderId) {
     $("btn-sum-drive").href = drive.folderUrl(s.drive.folderId);
@@ -3249,7 +3395,7 @@ async function openSummary(s, { auto = false } = {}) {
   }
   $("sum-incidents").textContent = incidentText(s);
   clearTimeout(openSummary.timer);
-  if (!report.ok && !report.needsLogin && summaryState.attempts < 6) {
+  if (!report.ok && !report.needsLogin && !report.needsTeam && summaryState.attempts < 6) {
     openSummary.timer = setTimeout(() => {
       if (currentScreen === "summary" && summaryState?.session === s && my === summaryRun && navigator.onLine) openSummary(s, { auto: true });
     }, 2e4);
@@ -3257,7 +3403,8 @@ async function openSummary(s, { auto = false } = {}) {
 }
 async function openPrenda({ ask = false } = {}) {
   if (controller.s) return;
-  if (ask && !auth.isValid()) {
+  if (ask && auth.isValid() && teamSetupNeeded) await offerTeamSetup();
+  else if (ask && !auth.isValid()) {
     const r = await dialog({
       msg: "Google Drive NO está conectado.\n\nSi sigues sin conectar, las fotos y el audio se quedan solo en este móvil hasta que conectes.",
       okText: "Conectar ahora",
@@ -3421,7 +3568,10 @@ async function main() {
   refreshCameras();
   controller = new SessionController($("preview"), ui);
   prenda = new PrendaController(prendaUi);
-  auth.onChange(renderAuth);
+  auth.onChange(() => {
+    renderAuth();
+    refreshTeam();
+  });
   sync.onStatus(renderSync);
   setInterval(renderAuth, 3e4);
   $("btn-login").onclick = () => login().then(renderHome);
@@ -3434,7 +3584,7 @@ async function main() {
   $("tipo-badge").onclick = () => setTipo((prenda.s?.tipo || getTipo()) === "resubida" ? "nueva" : "resubida");
   renderTipo();
   document.querySelectorAll(".drive-alert").forEach((b) => {
-    b.onclick = () => login().then(() => {
+    b.onclick = () => (auth.isValid() && teamSetupNeeded ? runTeamSetup() : login()).then(() => {
       if (currentScreen === "home") renderHome();
     });
   });
@@ -3514,6 +3664,12 @@ async function main() {
     if (!s) return;
     if (!auth.isValid()) {
       login().then((ok) => {
+        if (ok) openSummary(s);
+      });
+      return;
+    }
+    if (teamSetupNeeded) {
+      runTeamSetup().then((ok) => {
         if (ok) openSummary(s);
       });
       return;

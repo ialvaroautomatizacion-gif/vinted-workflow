@@ -13,7 +13,7 @@ export function buildManifest(s, photos) {
   const valid = photos.filter(p => p.status !== 'deleted');
   const deleted = photos.filter(p => p.status === 'deleted');
   const lastKnown = s.startEpoch + Math.max(s.heartbeatMs || 0, ...s.segments.map(g => g.endMs || 0));
-  const base = `${CONFIG.ROOT_FOLDER_NAME}/${s.folderName}`;
+  const base = `${CONFIG.ROOT_FOLDER_NAME}/${s.userDir ? s.userDir + '/' : ''}${s.folderName}`;
   const photoOut = p => {
     const isDel = p.status === 'deleted';
     return {
@@ -141,7 +141,7 @@ export function buildSummaryText(s, photos) {
 export function buildPrendaManifest(s, photos) {
   const valid = photos.filter(p => p.status !== 'deleted').sort((a, b) => (a.order || a.seq) - (b.order || b.seq));
   const audios = s.segments.filter(g => g.endMs != null && !g.full?.empty).sort((a, b) => (a.order || a.seg) - (b.order || b.seg));
-  const base = `${CONFIG.ROOT_FOLDER_NAME}/${s.dayFolder}/${s.folderName}`;
+  const base = `${CONFIG.ROOT_FOLDER_NAME}/${s.userDir ? s.userDir + '/' : ''}${s.dayFolder}/${s.folderName}`;
   return {
     schema: 'vinted-workflow/prenda@1',
     app_version: CONFIG.APP_VERSION,
@@ -160,6 +160,7 @@ export function buildPrendaManifest(s, photos) {
       timezone: s.timezone,
       utc_offset_minutes: s.utcOffsetMin,
       google_account: s.accountEmail || null,
+      uploaded_by: s.userDir || 'propietario',
     },
     notes: [
       'Todas las fotos y todos los audios de esta carpeta pertenecen a UNA sola prenda.',

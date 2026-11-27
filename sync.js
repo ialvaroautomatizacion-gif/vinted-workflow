@@ -11,6 +11,7 @@ import { CONFIG } from './config.js';
 import { db } from './db.js';
 import { drive, DriveError } from './drive.js';
 import { auth } from './auth.js';
+import { team } from './team.js';
 import { allSessions, saveSession, forgetSession, photosOf, updatePhoto, addIncident, validPhotos } from './store.js';
 import { buildManifest, buildPrendaManifest, buildSummaryText, pendingAudioSegments } from './manifest.js';
 import { extFor, fmtDuration, fmtStamp, measureAudioDurationMs, log } from './util.js';
@@ -61,10 +62,12 @@ class SyncEngine {
   blockedReason() {
     if (!navigator.onLine) return 'Sin conexión: se subirá al volver la cobertura';
     if (!auth.isValid()) return 'Subida a Drive en pausa (acceso caducado). Todo se sigue guardando en el móvil';
+    if (this.needsTeamSetup) return 'Falta elegir la carpeta compartida del equipo';
     return null;
   }
 
   async runOnce() {
+    this.needsTeamSetup = await team.needsSetup();
     await this.computePending();
     this.status.paused = this.blockedReason();
     if (this.status.paused) return this.emit();
@@ -128,12 +131,25 @@ class SyncEngine {
     const email = (auth.email || '').toLowerCase();
     if (!s.accountEmail && email) s.accountEmail = email;
     const rootKey = `rootFolderId:${email}`;
+    const owner = team.isOwner(email);
+    if (!owner) {
+      // Colaborador: la raíz es la carpeta compartida de la dueña, elegida con el selector de Google
+      const shared = await team.sharedRoot(email);
+      if (!shared) throw new DriveError('Falta elegir la carpeta compartida del equipo', 403);
+      if (d.rootId && d.rootId !== shared) s.drive = { rootId: shared };
+      if (!s.drive.rootId) s.drive.rootId = shared;
+      s.userDir = team.userDir(email);
+    }
 
     if (forceCheck || !this.foldersChecked.has(s.id)) {
-      if (d.rootId && !(await drive.folderAlive(d.rootId))) { d.rootId = null; await db.kvSet(rootKey, null); }
-      if (d.folderId && !(await drive.folderAlive(d.folderId))) {
+      const dr = s.drive;
+      if (dr.rootId && !(await drive.folderAlive(dr.rootId))) {
+        if (!owner) { await team.setSharedRoot(null, email); throw new DriveError('Ya no hay acceso a la carpeta compartida: hay que volver a elegirla', 403); }
+        dr.rootId = null; await db.kvSet(rootKey, null);
+      }
+      if (dr.folderId && !(await drive.folderAlive(dr.folderId))) {
         addIncident(s, null, 'carpeta_de_drive_no_encontrada', 'se vuelve a crear y se suben de nuevo los archivos');
-        s.drive = { rootId: d.rootId };
+        s.drive = { rootId: dr.rootId };
       }
       this.foldersChecked.add(s.id);
     }
@@ -146,15 +162,21 @@ class SyncEngine {
         await db.kvSet(rootKey, dd.rootId);
       }
     }
+    // Carpeta base: la raíz para la dueña; la subcarpeta con su nombre para cada colaborador
+    let base = dd.rootId;
+    if (!owner) {
+      if (!dd.userId) dd.userId = await drive.ensureFolder(team.userDir(email), dd.rootId, `VW_USER_${email}`);
+      base = dd.userId;
+    }
     if (s.kind === 'prenda') {
-      // VINTED_WORKFLOW/AAAA-MM-DD/PRENDA_NN_HHhMM/  (fotos y audios juntos en la misma carpeta)
-      if (!dd.dayId) dd.dayId = await drive.ensureFolder(s.dayFolder, dd.rootId, `VW_DAY_${s.dayFolder}`);
+      // VINTED_WORKFLOW/[Nombre/]AAAA-MM-DD/PRENDA_NN_HHhMM_TIPO/  (fotos y audios juntos en la misma carpeta)
+      if (!dd.dayId) dd.dayId = await drive.ensureFolder(s.dayFolder, base, owner ? `VW_DAY_${s.dayFolder}` : `VW_DAY_${email}_${s.dayFolder}`);
       if (!dd.folderId) dd.folderId = await drive.ensureFolder(s.folderName, dd.dayId, `${s.id}_DIR`);
       dd.fotosId = dd.audioId = dd.folderId;
       await saveSession(s);
       return;
     }
-    if (!dd.folderId) dd.folderId = await drive.ensureFolder(s.folderName, dd.rootId, `${s.id}_DIR`);
+    if (!dd.folderId) dd.folderId = await drive.ensureFolder(s.folderName, base, `${s.id}_DIR`);
     if (!dd.fotosId) dd.fotosId = await drive.ensureFolder('FOTOS', dd.folderId, `${s.id}_FOTOS`);
     if (!dd.audioId) dd.audioId = await drive.ensureFolder('AUDIO', dd.folderId, `${s.id}_AUDIO`);
     if (!dd.partsId) dd.partsId = await drive.ensureFolder('fragmentos', dd.audioId, `${s.id}_PARTS`);
@@ -284,6 +306,7 @@ class SyncEngine {
     const add = (ok, label, detail = '', warn = false) => report.checks.push({ ok, label, detail, warn });
     if (!navigator.onLine) { report.offline = true; add(false, 'Sin conexión a Internet', 'Todo sigue guardado en el móvil. Se reintentará solo al volver la cobertura.'); return report; }
     if (!auth.isValid()) { report.needsLogin = true; add(false, 'Hay que volver a conectar con Google', 'El acceso dura 1 hora por seguridad. No se ha perdido nada: pulsa el botón para subir lo que falta.'); return report; }
+    if (await team.needsSetup()) { report.needsTeam = true; add(false, 'Falta conectar con la carpeta del equipo', 'Toca el botón de abajo y elige la carpeta VINTED_WORKFLOW compartida. No se ha perdido nada.'); return report; }
     if (this.wrongAccount(s)) { report.needsLogin = true; add(false, 'Cuenta de Google distinta', `Esta sesión empezó a guardarse en ${s.accountEmail}. Entra con esa cuenta.`); return report; }
 
     let photos, valid, missing = [], audioBad = [], lost = [];
