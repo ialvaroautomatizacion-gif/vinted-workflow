@@ -164,3 +164,11 @@ label.link-btn { display: inline-block; cursor: pointer; }
 .drive-alert { display: block; width: 100%; margin: 0 0 12px; padding: 14px 12px; border: 0; border-radius: 14px; background: var(--danger); color: #fff;
   font-weight: 700; font-size: 15px; line-height: 1.35; white-space: pre-line; text-align: center; cursor: pointer; }
 .drive-alert:disabled { background: var(--line); color: var(--muted); }
+
+/* ---------- Nueva / Resubida ---------- */
+.tipo-switch { display: flex; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 4px; margin: 0 0 10px; gap: 4px; }
+.tipo-opt { flex: 1; border: 0; border-radius: 10px; padding: 14px 8px; font-size: 16px; font-weight: 800; letter-spacing: .5px; background: transparent; color: var(--muted); cursor: pointer; }
+.tipo-opt.on[data-tipo="nueva"] { background: #1f6feb; color: #fff; }
+.tipo-opt.on[data-tipo="resubida"] { background: var(--warn); color: #111; }
+.tipo-badge { display: block; width: 100%; margin: 0 0 12px; padding: 12px; border: 0; border-radius: 12px; font-size: 15px; font-weight: 800; background: #1f6feb; color: #fff; cursor: pointer; }
+.tipo-badge.resubida { background: var(--warn); color: #111; }

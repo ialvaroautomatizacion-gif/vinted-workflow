@@ -149,6 +149,10 @@ export function buildPrendaManifest(s, photos) {
     item: {
       id: s.id,
       number_of_day: s.number,
+      tipo: s.tipo === 'resubida' ? 'resubida' : 'nueva',
+      tipo_descripcion: s.tipo === 'resubida'
+        ? 'RESUBIDA: la prenda ya existe en el sistema. Hay que buscar su anuncio anterior, eliminarlo y volver a publicarla.'
+        : 'NUEVA: la prenda nunca se ha subido. Hay que crearla y añadirla a su lote o bala.',
       folder: base,
       status: s.status === 'finished' ? 'guardada' : 'guardando',
       created_at: isoLocal(s.startEpoch),
@@ -159,6 +163,7 @@ export function buildPrendaManifest(s, photos) {
     },
     notes: [
       'Todas las fotos y todos los audios de esta carpeta pertenecen a UNA sola prenda.',
+      'item.tipo indica si la prenda es nueva (crear) o resubida (buscar la anterior, eliminarla y volver a subir). También aparece al final del nombre de la carpeta.',
       'Las fotos se hicieron con la cámara del iPhone; taken_at es la fecha de la foto según sus metadatos (null si no se pudo leer).',
       'Los audios se grabaron después de hacer las fotos: describen la prenda (marca, talla, medidas, defectos, instrucciones).',
     ],

@@ -1,4 +1,4 @@
-# Vinted Workflow — versión 0.5.0
+# Vinted Workflow — versión 0.6.0
 
 Aplicación web para iPhone (Safari) que guarda en tu Google Drive las fotos y el audio de cada prenda, **una carpeta por prenda**.
 
@@ -6,7 +6,7 @@ Aplicación web para iPhone (Safari) que guarda en tu Google Drive las fotos y e
 
 ## Uso normal: una prenda en tres pasos
 
-1. Abre la app → **NUEVA PRENDA**.
+1. Abre la app → **EMPEZAR PRENDA**.
 2. **HACER FOTO**: se abre la cámara del iPhone (calidad nativa). Haz la foto → *Usar foto*. Repite con **HACER OTRA FOTO**. (También puedes elegir fotos ya hechas de la fototeca.)
 3. **GRABAR AUDIO**: cuenta marca, talla, medidas, estado e instrucciones. Pulsa **PARAR**. Puedes escucharlo, borrarlo o grabar otro.
 4. **GUARDAR PRENDA** → **SIGUIENTE PRENDA**.
@@ -16,11 +16,11 @@ Cada prenda queda así en Drive:
 ```
 VINTED_WORKFLOW/
   2026-11-26/                 ← un día de trabajo
-    PRENDA_01_11h32/
+    PRENDA_01_11h32_NUEVA/
       foto_01.jpg  foto_02.jpg  foto_03.jpg     (archivos originales, sin recomprimir)
       audio_01.m4a                              (audio_02… si grabas más de uno)
       manifest.json                             (ficha para Claude)
-    PRENDA_02_11h36/
+    PRENDA_02_11h36_RESUBIDA/
       …
 ```
 
@@ -30,13 +30,17 @@ Detalles útiles:
 - La app sube los archivos **tal cual** los entrega el iPhone: no les baja la calidad.
 - **No hace falta esperar** a que termine de subir: pulsa SIGUIENTE PRENDA y la subida sigue sola. En el inicio ves cada prenda con «en Drive ✓» o «pendiente de subir».
 - Una prenda a medias **se guarda sola** en el móvil. Si cierras Safari, al volver el botón dice **CONTINUAR PRENDA**.
-- Si Google Drive no está conectado, aparece un **aviso rojo** con los archivos sin subir, y al pulsar NUEVA PRENDA la app pide conectar primero. Lo que prepares sin conexión queda en el móvil y se sube al conectar; no lo dejes pendiente más de un día.
+- Si Google Drive no está conectado, aparece un **aviso rojo** con los archivos sin subir, y al pulsar EMPEZAR PRENDA la app pide conectar primero. Lo que prepares sin conexión queda en el móvil y se sube al conectar; no lo dejes pendiente más de un día.
 - Si iOS corta el micrófono (una llamada), lo grabado se conserva y puedes grabar otro audio para continuar.
 - **Eliminar** una prenda guardada manda su carpeta a la papelera de Drive (30 días para recuperarla). **Descartar** una prenda sin guardar solo la quita de la app. En ningún caso se tocan las fotos de la galería del iPhone.
 
 ### Ficha de cada prenda (`manifest.json`)
 
 Lista las fotos (orden, nombre, nombre original, fecha de la foto, tamaño) y los audios (orden, duración, duración real medida). Todo lo que hay en la carpeta pertenece a una sola prenda, así que Claude no tiene que adivinar qué audio va con qué fotos.
+
+### Nueva o resubida
+
+En el inicio, encima de EMPEZAR PRENDA, eliges **NUEVA** (la prenda nunca se ha subido: hay que crearla y añadirla a su lote o bala) o **RESUBIDA** (ya existe: hay que buscar el anuncio anterior, eliminarlo y volver a publicarla). La elección se recuerda hasta que la cambies. Dentro de cada prenda se ve en grande y se puede cambiar tocándola. Queda en el nombre de la carpeta (`PRENDA_03_11h32_RESUBIDA`) y en `manifest.json` (`item.tipo`).
 
 ## Otro modo: sesión continua
 
@@ -74,8 +78,8 @@ Si algo no va, abre **Ajustes › Este dispositivo** en la app y envía una capt
 
 ## Prueba rápida (2 minutos)
 
-1. Haz 3 fotos de cualquier cosa con la cámara del iPhone.
-2. NUEVA PRENDA → ELEGIR FOTOS → marca las 3.
+1. Abre la app en Safari y deja marcado NUEVA.
+2. EMPEZAR PRENDA → HACER FOTO tres veces.
 3. GRABAR AUDIO, di «prueba uno, dos, tres», PARAR, y escúchalo con el reproductor.
 4. GUARDAR PRENDA → debe salir **Prenda guardada** con todo en ✅.
 5. *Abrir carpeta en Drive* → deben estar las 3 fotos, el audio y `manifest.json`.

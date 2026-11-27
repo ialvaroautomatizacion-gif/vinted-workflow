@@ -20,7 +20,7 @@
   form-action 'none'">
 <meta name="theme-color" content="#111418">
 <title>Vinted Workflow</title>
-<link rel="stylesheet" href="app.css?v=0.5.0">
+<link rel="stylesheet" href="app.css?v=0.6.0">
 </head>
 <body>
 
@@ -40,7 +40,11 @@
   </div>
 
   <button class="drive-alert hidden" disabled></button>
-  <button id="btn-prenda" class="btn huge primary">NUEVA PRENDA</button>
+  <div class="tipo-switch" role="radiogroup" aria-label="Tipo de prenda">
+    <button class="tipo-opt" data-tipo="nueva" role="radio">NUEVA</button>
+    <button class="tipo-opt" data-tipo="resubida" role="radio">RESUBIDA</button>
+  </div>
+  <button id="btn-prenda" class="btn huge primary">EMPEZAR PRENDA</button>
   <p class="hint hidden" id="prenda-hint"></p>
 
   <div class="status-row" id="status-row">
@@ -130,6 +134,7 @@
     <button id="btn-prenda-back" class="btn secondary">← Inicio</button>
     <span id="prenda-title">Prenda nueva</span>
   </header>
+  <button id="tipo-badge" class="tipo-badge"></button>
   <button class="drive-alert hidden" disabled></button>
 
   <div class="card">
@@ -204,6 +209,6 @@
 </div>
 
 <script src="https://accounts.google.com/gsi/client" async></script>
-<script type="module" src="bundle.js?v=0.5.0"></script>
+<script type="module" src="bundle.js?v=0.6.0"></script>
 </body>
 </html>

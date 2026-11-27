@@ -2,7 +2,7 @@
 
 // ../vinted-workflow/config.js
 var CONFIG = {
-  APP_VERSION: "0.5.0",
+  APP_VERSION: "0.6.0",
   // ID de cliente OAuth (tipo "Aplicación web") del proyecto de Google Cloud "vinted-workflow".
   CLIENT_ID: "34737536696-u8js6hqusljsbs5v5b4i424b3ejuhto2.apps.googleusercontent.com",
   // Correos autorizados. Si entras con otra cuenta, la app se niega a trabajar
@@ -1148,6 +1148,8 @@ function buildPrendaManifest(s, photos) {
     item: {
       id: s.id,
       number_of_day: s.number,
+      tipo: s.tipo === "resubida" ? "resubida" : "nueva",
+      tipo_descripcion: s.tipo === "resubida" ? "RESUBIDA: la prenda ya existe en el sistema. Hay que buscar su anuncio anterior, eliminarlo y volver a publicarla." : "NUEVA: la prenda nunca se ha subido. Hay que crearla y añadirla a su lote o bala.",
       folder: base,
       status: s.status === "finished" ? "guardada" : "guardando",
       created_at: isoLocal(s.startEpoch),
@@ -1158,6 +1160,7 @@ function buildPrendaManifest(s, photos) {
     },
     notes: [
       "Todas las fotos y todos los audios de esta carpeta pertenecen a UNA sola prenda.",
+      "item.tipo indica si la prenda es nueva (crear) o resubida (buscar la anterior, eliminarla y volver a subir). También aparece al final del nombre de la carpeta.",
       "Las fotos se hicieron con la cámara del iPhone; taken_at es la fecha de la foto según sus metadatos (null si no se pudo leer).",
       "Los audios se grabaron después de hacer las fotos: describen la prenda (marca, talla, medidas, defectos, instrucciones)."
     ],
@@ -2290,11 +2293,13 @@ var dayOf = (epoch) => {
   const d = new Date(epoch);
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 };
-function newPrendaRecord() {
+var TIPOS = ["nueva", "resubida"];
+function newPrendaRecord(tipo = "nueva") {
   const now = Date.now(), d = new Date(now);
   return {
     id: `P${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}_${randomId(4)}`,
     kind: "prenda",
+    tipo: TIPOS.includes(tipo) ? tipo : "nueva",
     status: "draft",
     startEpoch: now,
     endEpoch: null,
@@ -2408,11 +2413,15 @@ var PrendaController = class {
     return this.rec ? this.rec.clock.elapsed() : 0;
   }
   /** Abre el borrador existente o crea uno nuevo. */
-  async open() {
+  async open(tipo) {
     let s = currentDraft();
     if (s) await this.reconcile(s);
     else {
-      s = newPrendaRecord();
+      s = newPrendaRecord(tipo);
+      await saveSession(s);
+    }
+    if (!TIPOS.includes(s.tipo)) {
+      s.tipo = TIPOS.includes(tipo) ? tipo : "nueva";
       await saveSession(s);
     }
     this.s = s;
@@ -2446,6 +2455,11 @@ var PrendaController = class {
   }
   audios() {
     return this.s ? this.s.segments.filter((g) => g.endMs != null && (g.chunkCount || 0) > 0) : [];
+  }
+  async setTipo(tipo) {
+    if (!this.s || !TIPOS.includes(tipo)) return;
+    this.s.tipo = tipo;
+    await saveSession(this.s);
   }
   // ---------- Fotos ----------
   /** Añade las fotos elegidas en la galería del iPhone. Devuelve { added, skipped }. */
@@ -2631,7 +2645,7 @@ var PrendaController = class {
     const key = `prendaCount:${s.dayFolder}`;
     s.number = (await db.kvGet(key) || 0) + 1;
     await db.kvSet(key, s.number);
-    s.folderName = `PRENDA_${pad(s.number)}_${pad(d.getHours())}h${pad(d.getMinutes())}`;
+    s.folderName = `PRENDA_${pad(s.number)}_${pad(d.getHours())}h${pad(d.getMinutes())}_${s.tipo === "resubida" ? "RESUBIDA" : "NUEVA"}`;
     const photos = await this.photos();
     const w = Math.max(2, String(photos.length).length);
     let n = 0;
@@ -2727,6 +2741,27 @@ function go(screen) {
 var radio = (name) => document.querySelector(`input[name=${name}]:checked`)?.value;
 function getOpts() {
   return { photoMode: radio("photomode") || "auto", quality: radio("quality") || "high", audioFormat: radio("audiofmt") || "auto", deviceId: $("camera-select").value || "" };
+}
+var getTipo = () => {
+  const t = settings.get("tipo", "nueva");
+  return TIPOS.includes(t) ? t : "nueva";
+};
+function renderTipo() {
+  const t = getTipo();
+  document.querySelectorAll(".tipo-opt").forEach((b) => {
+    const on = b.dataset.tipo === t;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-checked", on);
+  });
+  const pt = prenda?.s?.tipo || t;
+  const badge = $("tipo-badge");
+  badge.textContent = pt === "resubida" ? "🔁 RESUBIDA · toca para cambiar a NUEVA" : "✨ NUEVA · toca para cambiar a RESUBIDA";
+  badge.classList.toggle("resubida", pt === "resubida");
+}
+async function setTipo(t) {
+  settings.set("tipo", t);
+  if (prenda?.s) await prenda.setTipo(t);
+  renderTipo();
 }
 function restoreSettings() {
   for (const name of ["photomode", "quality", "audiofmt"]) {
@@ -2903,7 +2938,7 @@ async function renderHome() {
   const dn = draft ? data.find((d) => d.s === draft)?.photos ?? 0 : 0;
   const da = draft ? draft.segments.filter((g) => g.endMs != null).length : 0;
   const hasDraft = !!draft && (dn > 0 || da > 0);
-  $("btn-prenda").textContent = hasDraft ? "CONTINUAR PRENDA" : "NUEVA PRENDA";
+  $("btn-prenda").textContent = hasDraft ? "CONTINUAR PRENDA" : "EMPEZAR PRENDA";
   $("prenda-hint").textContent = hasDraft ? `A medias: ${dn} foto(s) y ${da} audio(s).` : "";
   show($("prenda-hint"), hasDraft);
   const list = $("session-list");
@@ -2915,7 +2950,7 @@ async function renderHome() {
     const dur = (s.endEpoch || s.startEpoch + (s.heartbeatMs || 0)) - s.startEpoch;
     const audios = s.segments.filter((g) => !g.full?.empty && (g.chunkCount || 0) > 0).length;
     const tag = s.verified ? '<span class="tag ok">en Drive ✓</span>' : s.lossy ? '<span class="tag pend">guardada con incidencias</span>' : s.status === "active" ? '<span class="tag bad">sin terminar</span>' : '<span class="tag pend">pendiente de subir</span>';
-    const title = isPrenda ? `Prenda ${String(s.number || "").padStart(2, "0")} · ${fmtDateTime(s.endEpoch || s.startEpoch)}` : `Sesión · ${fmtDateTime(s.startEpoch)}`;
+    const title = isPrenda ? `Prenda ${String(s.number || "").padStart(2, "0")} · ${s.tipo === "resubida" ? "RESUBIDA" : "NUEVA"} · ${fmtDateTime(s.endEpoch || s.startEpoch)}` : `Sesión · ${fmtDateTime(s.startEpoch)}`;
     const detail = isPrenda ? `${photos} foto(s) · ${audios} audio(s)` : `${fmtDuration(dur)} · ${photos} fotos · ${audios} audio(s)`;
     li.innerHTML = `${isPrenda ? '<img class="mini-thumb" alt="">' : ""}<div><div><b>${escapeHtml(title)}</b> ${tag}</div>
       <div class="muted">${escapeHtml(detail)}</div>
@@ -3181,6 +3216,7 @@ async function openSummary(s, { auto = false } = {}) {
   const audios = s.segments.filter((g) => (g.chunkCount || 0) > 0).length;
   $("sum-kv").innerHTML = isPrenda ? `
     <dt>Prenda</dt><dd>${String(s.number || "").padStart(2, "0")} · ${fmtDateTime(s.endEpoch || s.startEpoch)}</dd>
+    <dt>Tipo</dt><dd>${s.tipo === "resubida" ? "🔁 RESUBIDA" : "✨ NUEVA"}</dd>
     <dt>Fotos</dt><dd>${valid.length}</dd>
     <dt>Audio</dt><dd>${audios ? `${audios} (${fmtDuration(audioMs)})` : "sin audio"}</dd>
     <dt>Carpeta</dt><dd>${escapeHtml(CONFIG.ROOT_FOLDER_NAME)}/${escapeHtml(s.dayFolder)}/${escapeHtml(s.folderName)}</dd>` : `
@@ -3230,7 +3266,8 @@ async function openPrenda({ ask = false } = {}) {
     });
     if (r) await r;
   }
-  await prenda.open();
+  await prenda.open(getTipo());
+  renderTipo();
   go("prenda");
   try {
     history.pushState({ vw: "prenda" }, "");
@@ -3391,6 +3428,11 @@ async function main() {
   $("btn-logout").onclick = () => login({ switchAccount: true }).then(renderHome);
   $("btn-start").onclick = startSession;
   $("btn-prenda").onclick = () => openPrenda({ ask: true });
+  document.querySelectorAll(".tipo-opt").forEach((b) => {
+    b.onclick = () => setTipo(b.dataset.tipo);
+  });
+  $("tipo-badge").onclick = () => setTipo((prenda.s?.tipo || getTipo()) === "resubida" ? "nueva" : "resubida");
+  renderTipo();
   document.querySelectorAll(".drive-alert").forEach((b) => {
     b.onclick = () => login().then(() => {
       if (currentScreen === "home") renderHome();

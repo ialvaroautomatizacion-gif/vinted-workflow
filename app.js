@@ -10,7 +10,7 @@ import { pickAudioMime, supportedAudioFormats } from './audio.js';
 import { loadSessions, photosOf, thumbOf, validPhotos, addIncident, saveSession } from './store.js';
 import { sync } from './sync.js';
 import { SessionController, finishOrphan } from './session.js';
-import { PrendaController, currentDraft } from './prenda.js';
+import { PrendaController, currentDraft, TIPOS } from './prenda.js';
 import { fmtDuration, fmtDateTime, fmtBytes, escapeHtml, settings } from './util.js';
 
 const $ = id => document.getElementById(id);
@@ -61,6 +61,25 @@ const radio = name => document.querySelector(`input[name=${name}]:checked`)?.val
 function getOpts() {
   return { photoMode: radio('photomode') || 'auto', quality: radio('quality') || 'high', audioFormat: radio('audiofmt') || 'auto', deviceId: $('camera-select').value || '' };
 }
+// ---------------- Tipo de prenda: nueva o resubida ----------------
+const getTipo = () => { const t = settings.get('tipo', 'nueva'); return TIPOS.includes(t) ? t : 'nueva'; };
+function renderTipo() {
+  const t = getTipo();
+  document.querySelectorAll('.tipo-opt').forEach(b => {
+    const on = b.dataset.tipo === t;
+    b.classList.toggle('on', on); b.setAttribute('aria-checked', on);
+  });
+  const pt = prenda?.s?.tipo || t;
+  const badge = $('tipo-badge');
+  badge.textContent = pt === 'resubida' ? '🔁 RESUBIDA · toca para cambiar a NUEVA' : '✨ NUEVA · toca para cambiar a RESUBIDA';
+  badge.classList.toggle('resubida', pt === 'resubida');
+}
+async function setTipo(t) {
+  settings.set('tipo', t);
+  if (prenda?.s) await prenda.setTipo(t);
+  renderTipo();
+}
+
 function restoreSettings() {
   for (const name of ['photomode', 'quality', 'audiofmt']) {
     const saved = settings.get(name, null);
@@ -228,7 +247,7 @@ async function renderHome() {
   const dn = draft ? (data.find(d => d.s === draft)?.photos ?? 0) : 0;
   const da = draft ? draft.segments.filter(g => g.endMs != null).length : 0;
   const hasDraft = !!draft && (dn > 0 || da > 0);
-  $('btn-prenda').textContent = hasDraft ? 'CONTINUAR PRENDA' : 'NUEVA PRENDA';
+  $('btn-prenda').textContent = hasDraft ? 'CONTINUAR PRENDA' : 'EMPEZAR PRENDA';
   $('prenda-hint').textContent = hasDraft ? `A medias: ${dn} foto(s) y ${da} audio(s).` : '';
   show($('prenda-hint'), hasDraft);
 
@@ -244,7 +263,7 @@ async function renderHome() {
       : s.lossy ? '<span class="tag pend">guardada con incidencias</span>'
       : s.status === 'active' ? '<span class="tag bad">sin terminar</span>'
       : '<span class="tag pend">pendiente de subir</span>';
-    const title = isPrenda ? `Prenda ${String(s.number || '').padStart(2, '0')} · ${fmtDateTime(s.endEpoch || s.startEpoch)}` : `Sesión · ${fmtDateTime(s.startEpoch)}`;
+    const title = isPrenda ? `Prenda ${String(s.number || '').padStart(2, '0')} · ${s.tipo === 'resubida' ? 'RESUBIDA' : 'NUEVA'} · ${fmtDateTime(s.endEpoch || s.startEpoch)}` : `Sesión · ${fmtDateTime(s.startEpoch)}`;
     const detail = isPrenda ? `${photos} foto(s) · ${audios} audio(s)` : `${fmtDuration(dur)} · ${photos} fotos · ${audios} audio(s)`;
     li.innerHTML = `${isPrenda ? '<img class="mini-thumb" alt="">' : ''}<div><div><b>${escapeHtml(title)}</b> ${tag}</div>
       <div class="muted">${escapeHtml(detail)}</div>
@@ -496,6 +515,7 @@ async function openSummary(s, { auto = false } = {}) {
   const audios = s.segments.filter(g => (g.chunkCount || 0) > 0).length;
   $('sum-kv').innerHTML = isPrenda ? `
     <dt>Prenda</dt><dd>${String(s.number || '').padStart(2, '0')} · ${fmtDateTime(s.endEpoch || s.startEpoch)}</dd>
+    <dt>Tipo</dt><dd>${s.tipo === 'resubida' ? '🔁 RESUBIDA' : '✨ NUEVA'}</dd>
     <dt>Fotos</dt><dd>${valid.length}</dd>
     <dt>Audio</dt><dd>${audios ? `${audios} (${fmtDuration(audioMs)})` : 'sin audio'}</dd>
     <dt>Carpeta</dt><dd>${escapeHtml(CONFIG.ROOT_FOLDER_NAME)}/${escapeHtml(s.dayFolder)}/${escapeHtml(s.folderName)}</dd>` : `
@@ -547,7 +567,8 @@ async function openPrenda({ ask = false } = {}) {
     });
     if (r) await r;
   }
-  await prenda.open();
+  await prenda.open(getTipo());
+  renderTipo();
   go('prenda');
   try { history.pushState({ vw: 'prenda' }, ''); } catch { /* */ }
   await renderPrenda();
@@ -699,6 +720,9 @@ async function main() {
   $('btn-logout').onclick = () => login({ switchAccount: true }).then(renderHome);
   $('btn-start').onclick = startSession;
   $('btn-prenda').onclick = () => openPrenda({ ask: true });
+  document.querySelectorAll('.tipo-opt').forEach(b => { b.onclick = () => setTipo(b.dataset.tipo); });
+  $('tipo-badge').onclick = () => setTipo((prenda.s?.tipo || getTipo()) === 'resubida' ? 'nueva' : 'resubida');
+  renderTipo();
   document.querySelectorAll('.drive-alert').forEach(b => { b.onclick = () => login().then(() => { if (currentScreen === 'home') renderHome(); }); });
   $('btn-prenda-back').onclick = leavePrenda;
   $('file-input').onchange = onPickFiles;

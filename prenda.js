@@ -16,11 +16,14 @@ import { SessionClock, randomId, pad, extFor, isoLocal, log } from './util.js';
 
 const dayOf = epoch => { const d = new Date(epoch); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
 
-export function newPrendaRecord() {
+/** tipo: 'nueva' (prenda que nunca se ha subido) o 'resubida' (ya existe y se vuelve a publicar). */
+export const TIPOS = ['nueva', 'resubida'];
+export function newPrendaRecord(tipo = 'nueva') {
   const now = Date.now(), d = new Date(now);
   return {
     id: `P${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}_${randomId(4)}`,
     kind: 'prenda',
+    tipo: TIPOS.includes(tipo) ? tipo : 'nueva',
     status: 'draft',
     startEpoch: now,
     endEpoch: null,
@@ -120,10 +123,11 @@ export class PrendaController {
   get recordingMs() { return this.rec ? this.rec.clock.elapsed() : 0; }
 
   /** Abre el borrador existente o crea uno nuevo. */
-  async open() {
+  async open(tipo) {
     let s = currentDraft();
     if (s) await this.reconcile(s);
-    else { s = newPrendaRecord(); await saveSession(s); }
+    else { s = newPrendaRecord(tipo); await saveSession(s); }
+    if (!TIPOS.includes(s.tipo)) { s.tipo = TIPOS.includes(tipo) ? tipo : 'nueva'; await saveSession(s); }
     this.s = s;
     return s;
   }
@@ -147,6 +151,12 @@ export class PrendaController {
 
   async photos() { return this.s ? orderPhotos((await photosOf(this.s.id)).filter(p => p.status !== 'deleted')) : []; }
   audios() { return this.s ? this.s.segments.filter(g => g.endMs != null && (g.chunkCount || 0) > 0) : []; }
+
+  async setTipo(tipo) {
+    if (!this.s || !TIPOS.includes(tipo)) return;
+    this.s.tipo = tipo;
+    await saveSession(this.s);
+  }
 
   // ---------- Fotos ----------
   /** Añade las fotos elegidas en la galería del iPhone. Devuelve { added, skipped }. */
@@ -292,7 +302,7 @@ export class PrendaController {
     const key = `prendaCount:${s.dayFolder}`;
     s.number = ((await db.kvGet(key)) || 0) + 1;
     await db.kvSet(key, s.number);
-    s.folderName = `PRENDA_${pad(s.number)}_${pad(d.getHours())}h${pad(d.getMinutes())}`;
+    s.folderName = `PRENDA_${pad(s.number)}_${pad(d.getHours())}h${pad(d.getMinutes())}_${s.tipo === 'resubida' ? 'RESUBIDA' : 'NUEVA'}`;
     const photos = await this.photos();
     const w = Math.max(2, String(photos.length).length);
     let n = 0;
