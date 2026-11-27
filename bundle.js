@@ -2,7 +2,7 @@
 
 // ../vinted-workflow/config.js
 var CONFIG = {
-  APP_VERSION: "0.4.0",
+  APP_VERSION: "0.5.0",
   // ID de cliente OAuth (tipo "Aplicación web") del proyecto de Google Cloud "vinted-workflow".
   CLIENT_ID: "34737536696-u8js6hqusljsbs5v5b4i424b3ejuhto2.apps.googleusercontent.com",
   // Correos autorizados. Si entras con otra cuenta, la app se niega a trabajar
@@ -2828,6 +2828,19 @@ function renderAuth() {
   show($("btn-logout"), ok || !!auth.email);
   $("btn-start").disabled = !ok || !!orphan;
   $("start-hint").textContent = !ok ? "Entra con Google para empezar." : orphan ? "Reanuda o termina primero la sesión pendiente." : "";
+  renderDriveAlert();
+}
+function renderDriveAlert() {
+  const ok = auth.isValid();
+  const pending = sync.status.pendingPhotos + sync.status.pendingAudio;
+  const txt = !auth.ready ? "Cargando Google…" : pending ? `⚠️ ${pending} archivo(s) SIN SUBIR a Drive
+Toca aquí para conectar Google Drive` : "⚠️ Google Drive NO está conectado\nToca aquí para conectar";
+  document.querySelectorAll(".drive-alert").forEach((b) => {
+    b.textContent = txt;
+    b.disabled = !auth.ready;
+    show(b, !ok);
+  });
+  show($("status-row"), ok);
 }
 async function environmentWarnings() {
   const ua = navigator.userAgent;
@@ -2964,6 +2977,7 @@ async function deleteSessionFlow(s, photos) {
   renderHome();
 }
 function renderSync(st, justSaved) {
+  renderDriveAlert();
   if (justSaved && currentScreen === "home") renderHome();
   const pending = st.pendingPhotos + st.pendingAudio;
   $("home-sync").textContent = !pending && !st.lastError ? auth.isValid() ? "Todo en Drive" : "" : !navigator.onLine ? `Sin conexión · ${pending} archivo(s) por subir` : !auth.isValid() ? `${pending} archivo(s) por subir: entra con Google` : st.lastError ? `Reintentando la subida…` : `Subiendo… quedan ${pending}`;
@@ -3205,8 +3219,17 @@ async function openSummary(s, { auto = false } = {}) {
     }, 2e4);
   }
 }
-async function openPrenda() {
+async function openPrenda({ ask = false } = {}) {
   if (controller.s) return;
+  if (ask && !auth.isValid()) {
+    const r = await dialog({
+      msg: "Google Drive NO está conectado.\n\nSi sigues sin conectar, las fotos y el audio se quedan solo en este móvil hasta que conectes.",
+      okText: "Conectar ahora",
+      cancelText: "Seguir sin conectar",
+      onOk: () => auth.ready ? login() : false
+    });
+    if (r) await r;
+  }
   await prenda.open();
   go("prenda");
   try {
@@ -3367,7 +3390,12 @@ async function main() {
   $("btn-login").onclick = () => login().then(renderHome);
   $("btn-logout").onclick = () => login({ switchAccount: true }).then(renderHome);
   $("btn-start").onclick = startSession;
-  $("btn-prenda").onclick = openPrenda;
+  $("btn-prenda").onclick = () => openPrenda({ ask: true });
+  document.querySelectorAll(".drive-alert").forEach((b) => {
+    b.onclick = () => login().then(() => {
+      if (currentScreen === "home") renderHome();
+    });
+  });
   $("btn-prenda-back").onclick = leavePrenda;
   $("file-input").onchange = onPickFiles;
   $("camera-input").onchange = onPickFiles;

@@ -152,6 +152,18 @@ function renderAuth() {
   show($('btn-logout'), ok || !!auth.email);
   $('btn-start').disabled = !ok || !!orphan;
   $('start-hint').textContent = !ok ? 'Entra con Google para empezar.' : orphan ? 'Reanuda o termina primero la sesión pendiente.' : '';
+  renderDriveAlert();
+}
+
+/** Aviso rojo fijo cuando Drive no está conectado: lo capturado se queda solo en el móvil. */
+function renderDriveAlert() {
+  const ok = auth.isValid();
+  const pending = sync.status.pendingPhotos + sync.status.pendingAudio;
+  const txt = !auth.ready ? 'Cargando Google…'
+    : pending ? `⚠️ ${pending} archivo(s) SIN SUBIR a Drive\nToca aquí para conectar Google Drive`
+    : '⚠️ Google Drive NO está conectado\nToca aquí para conectar';
+  document.querySelectorAll('.drive-alert').forEach(b => { b.textContent = txt; b.disabled = !auth.ready; show(b, !ok); });
+  show($('status-row'), ok);
 }
 
 // ---------------- Comprobaciones del dispositivo ----------------
@@ -285,6 +297,7 @@ async function deleteSessionFlow(s, photos) {
 }
 
 function renderSync(st, justSaved) {
+  renderDriveAlert();
   if (justSaved && currentScreen === 'home') renderHome();
   const pending = st.pendingPhotos + st.pendingAudio;
   $('home-sync').textContent = !pending && !st.lastError ? (auth.isValid() ? 'Todo en Drive' : '')
@@ -525,8 +538,15 @@ async function openSummary(s, { auto = false } = {}) {
 }
 
 // ---------------- Prenda (modo sencillo) ----------------
-async function openPrenda() {
+async function openPrenda({ ask = false } = {}) {
   if (controller.s) return;
+  if (ask && !auth.isValid()) {
+    const r = await dialog({
+      msg: 'Google Drive NO está conectado.\n\nSi sigues sin conectar, las fotos y el audio se quedan solo en este móvil hasta que conectes.',
+      okText: 'Conectar ahora', cancelText: 'Seguir sin conectar', onOk: () => (auth.ready ? login() : false),
+    });
+    if (r) await r;
+  }
   await prenda.open();
   go('prenda');
   try { history.pushState({ vw: 'prenda' }, ''); } catch { /* */ }
@@ -678,7 +698,8 @@ async function main() {
   $('btn-login').onclick = () => login().then(renderHome);
   $('btn-logout').onclick = () => login({ switchAccount: true }).then(renderHome);
   $('btn-start').onclick = startSession;
-  $('btn-prenda').onclick = openPrenda;
+  $('btn-prenda').onclick = () => openPrenda({ ask: true });
+  document.querySelectorAll('.drive-alert').forEach(b => { b.onclick = () => login().then(() => { if (currentScreen === 'home') renderHome(); }); });
   $('btn-prenda-back').onclick = leavePrenda;
   $('file-input').onchange = onPickFiles;
   $('camera-input').onchange = onPickFiles;

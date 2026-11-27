@@ -1,4 +1,4 @@
-# Vinted Workflow — versión 0.4.0
+# Vinted Workflow — versión 0.5.0
 
 Aplicación web para iPhone (Safari) que guarda en tu Google Drive las fotos y el audio de cada prenda, **una carpeta por prenda**.
 
@@ -30,7 +30,7 @@ Detalles útiles:
 - La app sube los archivos **tal cual** los entrega el iPhone: no les baja la calidad.
 - **No hace falta esperar** a que termine de subir: pulsa SIGUIENTE PRENDA y la subida sigue sola. En el inicio ves cada prenda con «en Drive ✓» o «pendiente de subir».
 - Una prenda a medias **se guarda sola** en el móvil. Si cierras Safari, al volver el botón dice **CONTINUAR PRENDA**.
-- Puedes preparar prendas **sin conexión o sin haber entrado con Google**: se suben en cuanto entres.
+- Si Google Drive no está conectado, aparece un **aviso rojo** con los archivos sin subir, y al pulsar NUEVA PRENDA la app pide conectar primero. Lo que prepares sin conexión queda en el móvil y se sube al conectar; no lo dejes pendiente más de un día.
 - Si iOS corta el micrófono (una llamada), lo grabado se conserva y puedes grabar otro audio para continuar.
 - **Eliminar** una prenda guardada manda su carpeta a la papelera de Drive (30 días para recuperarla). **Descartar** una prenda sin guardar solo la quita de la app. En ningún caso se tocan las fotos de la galería del iPhone.
 

@@ -160,3 +160,7 @@ label.link-btn { display: inline-block; cursor: pointer; }
 .more { margin-top: 28px; }
 .more > summary { color: var(--muted); font-size: 14px; padding: 8px 2px; }
 .more > summary::-webkit-details-marker, .more > summary::marker { color: var(--muted); }
+
+.drive-alert { display: block; width: 100%; margin: 0 0 12px; padding: 14px 12px; border: 0; border-radius: 14px; background: var(--danger); color: #fff;
+  font-weight: 700; font-size: 15px; line-height: 1.35; white-space: pre-line; text-align: center; cursor: pointer; }
+.drive-alert:disabled { background: var(--line); color: var(--muted); }
